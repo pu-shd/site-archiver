@@ -154,6 +154,9 @@ def download_asset(url):
         # Stream download in chunks
         response = session.get(url, headers=headers, stream=True, timeout=20)
         if response.status_code == 200:
+            # Prevent infinite recursion on circular dependencies (e.g. self-importing styles)
+            downloaded_assets[url] = local_rel_path
+            
             with open(local_abs_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
@@ -161,8 +164,9 @@ def download_asset(url):
             # If it's a CSS file, parse it to find embedded resources (fonts, images)
             if local_rel_path.endswith('.css'):
                 process_css_file(local_abs_path, url)
+            elif local_rel_path.endswith('.js'):
+                process_js_file(local_abs_path)
                 
-            downloaded_assets[url] = local_rel_path
             return local_rel_path
         else:
             print(f"[!] Failed to download asset {url}: HTTP {response.status_code}")
@@ -170,6 +174,18 @@ def download_asset(url):
     except Exception as e:
         print(f"[!] Error downloading asset {url}: {e}")
         return url
+
+def process_js_file(js_abs_path):
+    """Strip sourceMappingURL comments from JS files to prevent console 404 errors."""
+    try:
+        with open(js_abs_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        cleaned = re.sub(r'//#\s*sourceMappingURL\s*=\s*[^\s\n\r]+', '', content, flags=re.IGNORECASE)
+        if len(cleaned) != len(content):
+            with open(js_abs_path, 'w', encoding='utf-8') as f:
+                f.write(cleaned)
+    except Exception as e:
+        print(f"[!] Error processing JS {js_abs_path}: {e}")
 
 def process_css_file(css_abs_path, css_url):
     """Scan a CSS file for url(...) imports, download assets, and rewrite them relative to the CSS file."""
@@ -180,10 +196,13 @@ def process_css_file(css_abs_path, css_url):
         # Regex to find url(...) references
         urls = re.findall(r'url\s*\(\s*[\'"]?([^\'"\)]+)[\'"]?\s*\)', css_content)
         
+        # Regex to find @import references (e.g. @import "style.css"; or @import '../fonts/roboto.css';)
+        imports = re.findall(r'@import\s*[\'"]([^\'"]+)[\'"]', css_content)
+        
         rewrites = {}
-        for asset_url in urls:
-            # Skip data URIs
-            if asset_url.startswith('data:'):
+        for asset_url in urls + imports:
+            # Skip data URIs or empty
+            if not asset_url or asset_url.startswith('data:'):
                 continue
                 
             # Resolve to absolute URL relative to the CSS file's URL
@@ -200,8 +219,10 @@ def process_css_file(css_abs_path, css_url):
                 
         # Rewrite CSS content
         for orig, rep in rewrites.items():
-            # Use regex replace or simple string replace
             css_content = css_content.replace(orig, rep)
+            
+        # Strip sourceMappingURL comments from CSS to prevent console 404 errors
+        css_content = re.sub(r'/\*#\s*sourceMappingURL\s*=\s*.*?\*/', '', css_content, flags=re.IGNORECASE)
             
         with open(css_abs_path, 'w', encoding='utf-8') as f:
             f.write(css_content)
@@ -411,9 +432,13 @@ def crawl_page(url):
         for script in soup.find_all('script'):
             src = script.get('src')
             if src:
-                new_src = make_relative(src, is_target_page=False)
-                if new_src != src:
-                    script['src'] = new_src
+                if 'MathJax_config' in src:
+                    # Redirect to CDN to avoid downloading and hosting massive MathJax library with dynamic plugin dependencies
+                    script['src'] = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.9/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
+                else:
+                    new_src = make_relative(src, is_target_page=False)
+                    if new_src != src:
+                        script['src'] = new_src
 
         # 3. Process images (<img src="..." srcset="...">)
         for img in soup.find_all(['img', 'source']):

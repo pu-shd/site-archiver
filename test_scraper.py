@@ -225,6 +225,79 @@ class TestScraper(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    @patch('scraper.session.get')
+    def test_mathjax_redirect_and_sourcemaps(self, mock_get):
+        # Mock HTML response with MathJax script and css/js files with source map urls
+        html_content = """
+        <html>
+            <head>
+                <script src="../libraries/MathJax/MathJax_config%3DTeX-AMS-MML_HTMLorMML.js"></script>
+                <link rel="stylesheet" href="https://fan60.princeton.edu/css/style.css">
+            </head>
+            <body></body>
+        </html>
+        """
+        
+        css_content = """
+        @import "../fonts/libre-franklin.css";
+        body { font-family: 'Libre Franklin'; }
+        /*# sourceMappingURL=styles.css.map */
+        """
+        
+        js_content = """
+        console.log("hello");
+        //# sourceMappingURL=index.js.map
+        """
+        
+        mock_resp_html = MagicMock()
+        mock_resp_html.status_code = 200
+        mock_resp_html.headers = {'Content-Type': 'text/html'}
+        mock_resp_html.text = html_content
+        
+        mock_resp_css = MagicMock()
+        mock_resp_css.status_code = 200
+        mock_resp_css.content = css_content.encode('utf-8')
+        mock_resp_css.iter_content.return_value = [css_content.encode('utf-8')]
+        
+        mock_resp_js = MagicMock()
+        mock_resp_js.status_code = 200
+        mock_resp_js.content = js_content.encode('utf-8')
+        mock_resp_js.iter_content.return_value = [js_content.encode('utf-8')]
+        
+        def get_side_effect(url, **kwargs):
+            if url.endswith('.css') or 'libre-franklin.css' in url:
+                return mock_resp_css
+            elif url.endswith('.js'):
+                return mock_resp_js
+            return mock_resp_html
+            
+        mock_get.side_effect = get_side_effect
+        
+        temp_dir = tempfile.mkdtemp()
+        scraper.output_dir = temp_dir
+        
+        try:
+            # Run page crawl
+            scraper.crawl_page("https://fan60.princeton.edu/")
+            
+            # Check script source rewrite for MathJax
+            expected_html_file = os.path.join(temp_dir, "index.html")
+            self.assertTrue(os.path.exists(expected_html_file))
+            with open(expected_html_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f.read(), 'html.parser')
+            script_src = soup.find('script')['src']
+            self.assertEqual(script_src, "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.9/MathJax.js?config=TeX-AMS-MML_HTMLorMML")
+            
+            # Check CSS source map removal
+            css_file = os.path.join(temp_dir, "css/style.css")
+            self.assertTrue(os.path.exists(css_file))
+            with open(css_file, 'r', encoding='utf-8') as f:
+                saved_css = f.read()
+            self.assertNotIn("sourceMappingURL", saved_css)
+            
+        finally:
+            shutil.rmtree(temp_dir)
+
 if __name__ == '__main__':
     unittest.main()
 
