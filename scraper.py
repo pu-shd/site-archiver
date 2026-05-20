@@ -379,6 +379,15 @@ def crawl_page(url):
                     parent_li.decompose()
                 else:
                     login_link.decompose()
+                    
+        # Remove search box and skip link (not implemented in static archive)
+        search_bar = soup.find(id='search-bar')
+        if search_bar:
+            search_bar.decompose()
+            
+        skip_search = soup.find('a', href='#edit-search-keys')
+        if skip_search:
+            skip_search.decompose()
         
         # Calculate current page directory relative to root
         local_rel_path = url_to_local_path(url, is_page=True)

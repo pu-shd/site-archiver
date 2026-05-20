@@ -148,6 +148,8 @@ class TestScraper(unittest.TestCase):
         main_html = """
         <html>
             <body>
+                <a class="sr-only sr-only-focusable" href="#edit-search-keys">Skip to search</a>
+                <div class="search-bar" id="search-bar">Search box</div>
                 <div class="utility-menu">
                     <ul class="nav navbar-nav utility-nav">
                         <li class="nav-item">
@@ -213,6 +215,8 @@ class TestScraper(unittest.TestCase):
                 
             self.assertIsNone(soup.find(class_='utility-menu'))
             self.assertIsNone(soup.find('a', class_='ps-login-link'))
+            self.assertIsNone(soup.find(id='search-bar'))
+            self.assertIsNone(soup.find('a', href='#edit-search-keys'))
             self.assertIsNone(soup.find('nav', class_='pager'))
             
             list_items = soup.find(class_='content-list-items')
