@@ -258,7 +258,13 @@ def handle_pagination(soup, url, pager):
             res = session.get(page_url, headers=headers, timeout=15)
             if res.status_code == 200:
                 sub_soup = BeautifulSoup(res.text, 'html.parser')
-                sub_block = sub_soup.find(class_=block_container.get('class'))
+                classes = block_container.get('class', [])
+                sub_block = None
+                if classes:
+                    selector = "." + ".".join(classes)
+                    sub_block = sub_soup.select_one(selector)
+                if not sub_block:
+                    sub_block = sub_soup.find(class_="block-ps-event-speaker-list")
                 if sub_block:
                     sub_list = sub_block.find(class_="content-list-items")
                     if sub_list:
