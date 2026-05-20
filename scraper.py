@@ -226,6 +226,22 @@ def handle_pagination(soup, url, pager):
     if not list_container:
         print("[!] Could not locate content-list-items container. Skipping merge.")
         return
+
+    # Find the index of this block among similar blocks on page 0 to fallback on
+    classes = block_container.get('class', [])
+    try:
+        if classes:
+            selector = "." + ".".join(classes)
+            similar_blocks = soup.select(selector)
+        else:
+            similar_blocks = soup.find_all(class_="block-ps-event-speaker-list")
+        block_index = similar_blocks.index(block_container)
+    except Exception:
+        block_index = 0
+
+    # Get block title to find matching block on paginated pages
+    block_title_el = block_container.find(class_="content-list-title")
+    block_title = block_title_el.get_text().strip() if block_title_el else None
         
     # 2. Extract page links from the pager
     page_urls = []
@@ -258,13 +274,28 @@ def handle_pagination(soup, url, pager):
             res = session.get(page_url, headers=headers, timeout=15)
             if res.status_code == 200:
                 sub_soup = BeautifulSoup(res.text, 'html.parser')
-                classes = block_container.get('class', [])
-                sub_block = None
+                
+                # Find all potential matching blocks on the subpage
                 if classes:
                     selector = "." + ".".join(classes)
-                    sub_block = sub_soup.select_one(selector)
-                if not sub_block:
-                    sub_block = sub_soup.find(class_="block-ps-event-speaker-list")
+                    all_blocks_sub = sub_soup.select(selector)
+                else:
+                    all_blocks_sub = sub_soup.find_all(class_="block-ps-event-speaker-list")
+                
+                sub_block = None
+                # Try finding matching block by title first
+                if block_title and all_blocks_sub:
+                    for candidate in all_blocks_sub:
+                        cand_title_el = candidate.find(class_="content-list-title")
+                        cand_title = cand_title_el.get_text().strip() if cand_title_el else None
+                        if cand_title == block_title:
+                            sub_block = candidate
+                            break
+                            
+                # Fall back to index matching if not found by title
+                if not sub_block and all_blocks_sub and block_index < len(all_blocks_sub):
+                    sub_block = all_blocks_sub[block_index]
+                    
                 if sub_block:
                     sub_list = sub_block.find(class_="content-list-items")
                     if sub_list:
