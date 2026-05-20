@@ -432,7 +432,7 @@ def crawl_page(url):
         for script in soup.find_all('script'):
             src = script.get('src')
             if src:
-                if 'MathJax_config' in src:
+                if 'MathJax.js' in src or 'MathJax_config' in src:
                     # Redirect to CDN to avoid downloading and hosting massive MathJax library with dynamic plugin dependencies
                     script['src'] = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.9/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
                 else:

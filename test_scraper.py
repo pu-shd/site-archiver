@@ -231,7 +231,7 @@ class TestScraper(unittest.TestCase):
         html_content = """
         <html>
             <head>
-                <script src="../libraries/MathJax/MathJax_config%3DTeX-AMS-MML_HTMLorMML.js"></script>
+                <script src="../libraries/MathJax/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
                 <link rel="stylesheet" href="https://fan60.princeton.edu/css/style.css">
             </head>
             <body></body>
