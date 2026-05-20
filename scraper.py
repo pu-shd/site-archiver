@@ -69,7 +69,7 @@ def url_to_local_path(url, is_page):
     """
     parsed = urllib.parse.urlparse(url)
     domain = parsed.netloc.lower()
-    path = parsed.path.lstrip('/')
+    path = urllib.parse.unquote(parsed.path).lstrip('/')
     
     # Strip dangerous characters from path
     path_parts = []
@@ -196,7 +196,7 @@ def process_css_file(css_abs_path, css_url):
                 # Calculate relative path from CSS file to the asset
                 css_rel_dir = os.path.dirname(os.path.relpath(css_abs_path, output_dir))
                 rel_path_to_asset = os.path.relpath(local_rel_path, css_rel_dir)
-                rewrites[asset_url] = rel_path_to_asset
+                rewrites[asset_url] = urllib.parse.quote(rel_path_to_asset, safe='/')
                 
         # Rewrite CSS content
         for orig, rep in rewrites.items():
@@ -208,6 +208,76 @@ def process_css_file(css_abs_path, css_url):
             
     except Exception as e:
         print(f"[!] Error processing CSS {css_abs_path}: {e}")
+
+def handle_pagination(soup, url, pager):
+    """Find other pages listed in the pager, fetch their items, append them to the current page, and remove the pager."""
+    print(f"[*] Found pagination on {url}. Merging paginated items...")
+    
+    # 1. Locate the container block of the pager
+    block_container = pager.find_parent(class_="block-ps-event-speaker-list")
+    if not block_container:
+        block_container = pager.find_parent(class_="block")
+        
+    if not block_container:
+        print("[!] Could not locate parent block for pager. Skipping merge.")
+        return
+        
+    list_container = block_container.find(class_="content-list-items")
+    if not list_container:
+        print("[!] Could not locate content-list-items container. Skipping merge.")
+        return
+        
+    # 2. Extract page links from the pager
+    page_urls = []
+    for a in pager.find_all('a'):
+        href = a.get('href')
+        if href:
+            resolved_href = urllib.parse.urljoin(url, href)
+            parsed = urllib.parse.urlparse(resolved_href)
+            query_params = urllib.parse.parse_qs(parsed.query)
+            if 'page' in query_params:
+                page_num = query_params['page'][0]
+                # Reconstruct a simplified URL to avoid Cloudflare pager_id block
+                simplified_url = urllib.parse.urlunparse((
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path,
+                    parsed.params,
+                    f"page={page_num}",
+                    ''
+                ))
+                if simplified_url not in [item[1] for item in page_urls] and page_num != '0':
+                    page_urls.append((int(page_num), simplified_url))
+                    
+    page_urls.sort()
+    
+    # 3. Fetch each page and extract items
+    for page_num, page_url in page_urls:
+        print(f"[*] Fetching paginated items from {page_url}...")
+        try:
+            res = session.get(page_url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                sub_soup = BeautifulSoup(res.text, 'html.parser')
+                sub_block = sub_soup.find(class_=block_container.get('class'))
+                if sub_block:
+                    sub_list = sub_block.find(class_="content-list-items")
+                    if sub_list:
+                        items = sub_list.find_all(class_="content-list-item")
+                        print(f"[*] Found {len(items)} items on page {page_num}. Merging...")
+                        for item in items:
+                            list_container.append(item)
+                    else:
+                        print(f"[!] Could not find list items on page {page_num}.")
+                else:
+                    print(f"[!] Could not find block container on page {page_num}.")
+            else:
+                print(f"[!] Failed to fetch page {page_num}: HTTP {res.status_code}")
+        except Exception as e:
+            print(f"[!] Error fetching/parsing page {page_num}: {e}")
+            
+    # 4. Remove the pager element so it doesn't render
+    pager.decompose()
+    print("[*] Successfully merged all pages and removed the pager navigation.")
 
 def crawl_page(url):
     """Crawl an HTML page, save it, process assets, and find sub-links."""
@@ -234,6 +304,24 @@ def crawl_page(url):
         html = response.text
         soup = BeautifulSoup(html, 'html.parser')
         
+        # Handle participant pagination merging
+        pager = soup.find('nav', class_='pager')
+        if pager:
+            handle_pagination(soup, url, pager)
+            
+        # Remove login link
+        login_link = soup.find('a', class_='ps-login-link')
+        if login_link:
+            utility_menu = login_link.find_parent(class_='utility-menu')
+            if utility_menu:
+                utility_menu.decompose()
+            else:
+                parent_li = login_link.find_parent('li')
+                if parent_li:
+                    parent_li.decompose()
+                else:
+                    login_link.decompose()
+        
         # Calculate current page directory relative to root
         local_rel_path = url_to_local_path(url, is_page=True)
         local_abs_path = os.path.join(output_dir, local_rel_path)
@@ -252,7 +340,7 @@ def crawl_page(url):
                     # Resolve to local path
                     target_local_path = url_to_local_path(resolved, is_page=True)
                     rel_path = os.path.relpath(target_local_path, current_page_rel_dir)
-                    return rel_path
+                    return urllib.parse.quote(rel_path, safe='/')
                 return target_url
             else:
                 # It's an asset
@@ -260,7 +348,7 @@ def crawl_page(url):
                     target_local_path = download_asset(resolved)
                     if target_local_path != resolved:
                         rel_path = os.path.relpath(target_local_path, current_page_rel_dir)
-                        return rel_path
+                        return urllib.parse.quote(rel_path, safe='/')
                 return target_url
 
         # 1. Process stylesheet/asset links (<link>)

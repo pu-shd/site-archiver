@@ -63,6 +63,12 @@ class TestScraper(unittest.TestCase):
             scraper.url_to_local_path("https://orfe.princeton.edu/images/logo.png", is_page=False),
             "_assets/orfe.princeton.edu/images/logo.png"
         )
+        
+        # Test percent-encoded path mapping (unquotes path)
+        self.assertEqual(
+            scraper.url_to_local_path("https://orfe.princeton.edu/images/logo%20with%20spaces@2x.png", is_page=False),
+            "_assets/orfe.princeton.edu/images/logo with spaces@2x.png"
+        )
 
     @patch('scraper.session.get')
     def test_download_asset_mock(self, mock_get):
@@ -134,6 +140,88 @@ class TestScraper(unittest.TestCase):
             # Verify that the internal page links were rewritten relative to /invited-speakers
             self.assertEqual(soup.find('a')['href'], "../schedule/index.html")
 
+        finally:
+            shutil.rmtree(temp_dir)
+
+    @patch('scraper.session.get')
+    def test_crawl_page_with_pager_and_login(self, mock_get):
+        main_html = """
+        <html>
+            <body>
+                <div class="utility-menu">
+                    <ul class="nav navbar-nav utility-nav">
+                        <li class="nav-item">
+                            <a class="ps-login-link ps-login-logout-link" data-drupal-link-system-path="caslogin" href="caslogin/index.html">Log in</a>
+                        </li>
+                    </ul>
+                </div>
+                <div class="block-ps-event-speaker-list">
+                    <div class="content-list-items" role="list">
+                        <div class="content-list-item">Speaker A</div>
+                    </div>
+                    <nav class="pager">
+                        <ul>
+                            <li><a href="https://fan60.princeton.edu/invited-speakers?page=0">1</a></li>
+                            <li><a href="https://fan60.princeton.edu/invited-speakers?page=1">2</a></li>
+                        </ul>
+                    </nav>
+                </div>
+            </body>
+        </html>
+        """
+        
+        page1_html = """
+        <html>
+            <body>
+                <div class="block-ps-event-speaker-list">
+                    <div class="content-list-items" role="list">
+                        <div class="content-list-item">Speaker B</div>
+                    </div>
+                </div>
+            </body>
+        </html>
+        """
+        
+        mock_resp_main = MagicMock()
+        mock_resp_main.status_code = 200
+        mock_resp_main.headers = {'Content-Type': 'text/html'}
+        mock_resp_main.text = main_html
+        
+        mock_resp_page1 = MagicMock()
+        mock_resp_page1.status_code = 200
+        mock_resp_page1.headers = {'Content-Type': 'text/html'}
+        mock_resp_page1.text = page1_html
+        
+        def get_side_effect(url, **kwargs):
+            if 'page=1' in url:
+                return mock_resp_page1
+            return mock_resp_main
+            
+        mock_get.side_effect = get_side_effect
+        
+        temp_dir = tempfile.mkdtemp()
+        scraper.output_dir = temp_dir
+        
+        try:
+            scraper.crawl_page("https://fan60.princeton.edu/invited-speakers")
+            
+            expected_html_file = os.path.join(temp_dir, "invited-speakers/index.html")
+            self.assertTrue(os.path.exists(expected_html_file))
+            
+            with open(expected_html_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f.read(), 'html.parser')
+                
+            self.assertIsNone(soup.find(class_='utility-menu'))
+            self.assertIsNone(soup.find('a', class_='ps-login-link'))
+            self.assertIsNone(soup.find('nav', class_='pager'))
+            
+            list_items = soup.find(class_='content-list-items')
+            self.assertIsNotNone(list_items)
+            items = list_items.find_all(class_='content-list-item')
+            self.assertEqual(len(items), 2)
+            self.assertEqual(items[0].get_text().strip(), "Speaker A")
+            self.assertEqual(items[1].get_text().strip(), "Speaker B")
+            
         finally:
             shutil.rmtree(temp_dir)
 
