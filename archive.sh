@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default Configs
 TARGET_URL=""
-OUTPUT_DIR="dist"
+OUTPUT_DIR=""
 REPO_PATH=""
 ALLOWED_ASSETS="*.princeton.edu"
 BYPASS_HEADER_VAL=""
@@ -137,6 +137,15 @@ if [[ ! "$TARGET_URL" =~ ^https?:// ]]; then
 fi
 
 # Resolve output path
+if [ -z "$OUTPUT_DIR" ]; then
+    if [ -n "$REPO_PATH" ]; then
+        # Default to a repo-specific subdirectory to avoid collisions
+        OUTPUT_DIR="dist/$REPO_PATH"
+    else
+        OUTPUT_DIR="dist"
+    fi
+fi
+
 mkdir -p "$OUTPUT_DIR"
 ABS_OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
@@ -227,6 +236,17 @@ git add .
 git commit -m "Mirror of $TARGET_URL on $(date)"
 
 # 7. Create Repo on GitHub and Push
+# Ensure the local remote 'origin' is synchronized with our target $REPO_PATH
+TARGET_REMOTE="git@github.com:$REPO_PATH.git"
+CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null)
+
+if [ -z "$CURRENT_REMOTE" ]; then
+    git remote add origin "$TARGET_REMOTE"
+elif [ "$CURRENT_REMOTE" != "$TARGET_REMOTE" ]; then
+    echo -e "${YELLOW}[!] Updating local 'origin' remote to $TARGET_REMOTE${NC}"
+    git remote set-url origin "$TARGET_REMOTE"
+fi
+
 echo -e "${BLUE}[*] Checking GitHub repository status for '$REPO_PATH'...${NC}"
 REPO_EXISTS=true
 if ! gh repo view "$REPO_PATH" &>/dev/null; then
@@ -235,29 +255,20 @@ fi
 
 if [ "$REPO_EXISTS" = false ]; then
     echo -e "${BLUE}[*] Repository '$REPO_PATH' does not exist. Creating public repository...${NC}"
-    if ! gh repo create "$REPO_PATH" --public --source=. --remote=origin --push; then
-        echo -e "${RED}Error: Failed to create and push to GitHub repository.${NC}"
+    # Just create the repo on GitHub, we handle remotes and pushing ourselves for robustness
+    if ! gh repo create "$REPO_PATH" --public; then
+        echo -e "${RED}Error: Failed to create GitHub repository.${NC}"
         exit 1
     fi
 else
-    echo -e "${YELLOW}[!] Repository '$REPO_PATH' already exists. Synchronizing remote and pushing...${NC}"
-    # Setup remote or update if it exists but points elsewhere
-    TARGET_REMOTE="git@github.com:$REPO_PATH.git"
-    CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null)
+    echo -e "${YELLOW}[!] Repository '$REPO_PATH' already exists.${NC}"
+fi
 
-    if [ -z "$CURRENT_REMOTE" ]; then
-        git remote add origin "$TARGET_REMOTE"
-    elif [ "$CURRENT_REMOTE" != "$TARGET_REMOTE" ]; then
-        echo -e "${YELLOW}[!] Warning: Local remote 'origin' points to $CURRENT_REMOTE${NC}"
-        echo -e "${YELLOW}[!] Updating 'origin' to $TARGET_REMOTE to prevent accidental overwrite.${NC}"
-        git remote set-url origin "$TARGET_REMOTE"
-    fi
-
-    # Force push to reset pages to mirror
-    if ! git push -u origin main --force; then
-        echo -e "${RED}Error: Failed to push to repository '$REPO_PATH'.${NC}"
-        exit 1
-    fi
+echo -e "${BLUE}[*] Pushing mirrored site to GitHub...${NC}"
+# Force push to reset pages to mirror
+if ! git push -u origin main --force; then
+    echo -e "${RED}Error: Failed to push to repository '$REPO_PATH'.${NC}"
+    exit 1
 fi
 echo -e "${GREEN}✔ Successfully pushed site to GitHub!${NC}"
 
