@@ -240,14 +240,22 @@ if [ "$REPO_EXISTS" = false ]; then
         exit 1
     fi
 else
-    echo -e "${YELLOW}[!] Repository '$REPO_PATH' already exists. Adding remote and pushing...${NC}"
-    # Setup remote if not exists
-    if ! git remote get-url origin &>/dev/null; then
-        git remote add origin "git@github.com:$REPO_PATH.git"
+    echo -e "${YELLOW}[!] Repository '$REPO_PATH' already exists. Synchronizing remote and pushing...${NC}"
+    # Setup remote or update if it exists but points elsewhere
+    TARGET_REMOTE="git@github.com:$REPO_PATH.git"
+    CURRENT_REMOTE=$(git remote get-url origin 2>/dev/null)
+
+    if [ -z "$CURRENT_REMOTE" ]; then
+        git remote add origin "$TARGET_REMOTE"
+    elif [ "$CURRENT_REMOTE" != "$TARGET_REMOTE" ]; then
+        echo -e "${YELLOW}[!] Warning: Local remote 'origin' points to $CURRENT_REMOTE${NC}"
+        echo -e "${YELLOW}[!] Updating 'origin' to $TARGET_REMOTE to prevent accidental overwrite.${NC}"
+        git remote set-url origin "$TARGET_REMOTE"
     fi
+
     # Force push to reset pages to mirror
     if ! git push -u origin main --force; then
-        echo -e "${RED}Error: Failed to push to existing repository.${NC}"
+        echo -e "${RED}Error: Failed to push to repository '$REPO_PATH'.${NC}"
         exit 1
     fi
 fi
@@ -261,14 +269,18 @@ if gh api "repos/$REPO_PATH/pages" &>/dev/null; then
     gh api -X POST "repos/$REPO_PATH/pages/builds" &>/dev/null
 else
     # Enable Pages via GitHub REST API
-    if ! gh api "repos/$REPO_PATH/pages" --method POST -f source='{"branch":"main","path":"/"}' &>/dev/null; then
-        echo -e "${YELLOW}[!] Pages creation via API returned an error, it might already be enabled or configuring. Retrying...${NC}"
+    # Pass the source branch configuration as a JSON payload via stdin
+    if ! echo '{"source":{"branch":"main","path":"/"}}' | gh api "repos/$REPO_PATH/pages" --input - &>/dev/null; then
+        # Try fallback using source[branch]=main format if --input fails
+        if ! gh api -X POST "repos/$REPO_PATH/pages" -f "source[branch]=main" -f "source[path]=/" &>/dev/null; then
+            echo -e "${YELLOW}[!] Pages creation via API returned an error, it might already be enabled or configuring. Retrying...${NC}"
+        fi
     fi
 fi
 
 # Retrieve Pages URL
 PAGES_URL=$(gh api "repos/$REPO_PATH/pages" --jq '.html_url' 2>/dev/null)
-if [ -z "$PAGES_URL" ]; then
+if [ $? -ne 0 ] || [ -z "$PAGES_URL" ] || [[ "$PAGES_URL" != http* ]]; then
     # Fallback guess of the standard URL
     ORG_NAME=$(echo "$REPO_PATH" | cut -d'/' -f1)
     REPO_NAME=$(echo "$REPO_PATH" | cut -d'/' -f2)
@@ -290,21 +302,25 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     ATTEMPT=$((ATTEMPT + 1))
     
     # Get latest pages-build-deployment workflow run status
-    RUN_INFO=$(gh api "repos/$REPO_PATH/actions/runs?event=pages_build_deployment" --jq '.workflow_runs[0] | "\(.status),\(.conclusion)"' 2>/dev/null)
+    RUN_INFO=$(gh api "repos/$REPO_PATH/actions/runs" --jq '.workflow_runs[] | select(.name | ascii_downcase | contains("pages")) | "\(.status),\(.conclusion)"' 2>/dev/null | head -n 1)
     
-    if [ -n "$RUN_INFO" ] && [ "$RUN_INFO" != "," ]; then
+    if [ -n "$RUN_INFO" ] && [ "$RUN_INFO" != "," ] && [ "$RUN_INFO" != "null,null" ]; then
         STATUS=$(echo "$RUN_INFO" | cut -d',' -f1)
         CONCLUSION=$(echo "$RUN_INFO" | cut -d',' -f2)
         
-        echo -e "  - Attempt $ATTEMPT/$MAX_ATTEMPTS: Deployment is ${BOLD}$STATUS${NC}... (Conclusion: ${BOLD}${CONCLUSION:-NONE}${NC})"
-        
-        if [ "$STATUS" = "completed" ]; then
-            if [ "$CONCLUSION" = "success" ]; then
-                DEPLOYED=true
-                break
-            elif [ "$CONCLUSION" = "failure" ] || [ "$CONCLUSION" = "cancelled" ]; then
-                echo -e "${RED}❌ GitHub Pages deployment workflow failed or was cancelled.${NC}"
-                exit 1
+        if [ "$STATUS" = "null" ]; then
+            echo -e "  - Attempt $ATTEMPT/$MAX_ATTEMPTS: Waiting for deployment workflow to start..."
+        else
+            echo -e "  - Attempt $ATTEMPT/$MAX_ATTEMPTS: Deployment is ${BOLD}$STATUS${NC}... (Conclusion: ${BOLD}${CONCLUSION:-NONE}${NC})"
+            
+            if [ "$STATUS" = "completed" ]; then
+                if [ "$CONCLUSION" = "success" ]; then
+                    DEPLOYED=true
+                    break
+                elif [ "$CONCLUSION" = "failure" ] || [ "$CONCLUSION" = "cancelled" ]; then
+                    echo -e "${RED}❌ GitHub Pages deployment workflow failed or was cancelled.${NC}"
+                    exit 1
+                fi
             fi
         fi
     else
