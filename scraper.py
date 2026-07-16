@@ -206,6 +206,25 @@ def download_secure_jquery():
     except Exception as e:
         print(f"[!] Error downloading secure jQuery: {e}")
     return None
+def download_secure_bootstrap():
+    """Download secure Bootstrap 4.6.2 and save it locally as profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min.js."""
+    local_path = "profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min.js"
+    abs_path = os.path.join(output_dir, local_path)
+    if os.path.exists(abs_path):
+        return local_path
+
+    print("[*] Downloading secure Bootstrap 4.6.2 for self-contained mode...")
+    try:
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        res = requests.get("https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.min.js", timeout=15)
+        if res.status_code == 200:
+            with open(abs_path, 'wb') as f:
+                f.write(res.content)
+            return local_path
+    except Exception as e:
+        print(f"[!] Error downloading secure Bootstrap: {e}")
+    return None
+
 
 
 def process_css_file(css_abs_path, css_url):
@@ -504,7 +523,18 @@ def crawl_page(url):
                         script['src'] = "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"
                     continue
 
-
+                # 1b. Check for bootstrap.min and redirect/self-contain
+                if 'bootstrap.min' in src and src.endswith('.js'):
+                    if self_contain:
+                        local_bs = download_secure_bootstrap()
+                        if local_bs:
+                            rel_path = os.path.relpath(local_bs, current_page_rel_dir)
+                            script['src'] = urllib.parse.quote(rel_path, safe='/')
+                        else:
+                            script['src'] = "https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.min.js"
+                    else:
+                        script['src'] = "https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.min.js"
+                    continue
                 # 2. Check for excluded script patterns
                 should_exclude = False
                 for pattern in EXCLUDED_SCRIPTS:

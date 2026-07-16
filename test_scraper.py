@@ -308,6 +308,7 @@ class TestScraper(unittest.TestCase):
         <html>
             <head>
                 <script src="../core/assets/vendor/jquery/jquery.min.js"></script>
+                <script src="../profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min_te79rq.js"></script>
                 <script src="../core/modules/ckeditor5/js/ckeditor5.dialog.fix.js"></script>
                 <script src="../profiles/ps/themes/ps_base/js/main-menu.js"></script>
             </head>
@@ -333,13 +334,15 @@ class TestScraper(unittest.TestCase):
                 soup = BeautifulSoup(f.read(), 'html.parser')
 
             scripts = soup.find_all('script', src=True)
-            # The CKEditor script should be decomposed, leaving only jQuery (redirected) and main-menu
-            self.assertEqual(len(scripts), 2)
+            # CKEditor is decomposed, leaving: jQuery (redirected), Bootstrap (redirected), and main-menu (relative)
+            self.assertEqual(len(scripts), 3)
 
             # First script should be redirected to jQuery CDN
             self.assertEqual(scripts[0]['src'], "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js")
-            # Second script should remain relative
-            self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
+            # Second script should be redirected to secure Bootstrap CDN
+            self.assertEqual(scripts[1]['src'], "https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/js/bootstrap.min.js")
+            # Third script should remain relative
+            self.assertEqual(scripts[2]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
 
         finally:
             shutil.rmtree(temp_dir)
@@ -354,6 +357,7 @@ class TestScraper(unittest.TestCase):
         <html>
             <head>
                 <script src="../core/assets/vendor/jquery/jquery.min.js"></script>
+                <script src="../profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min_te79rq.js"></script>
                 <script src="../profiles/ps/themes/ps_base/js/main-menu.js"></script>
             </head>
             <body></body>
@@ -365,11 +369,16 @@ class TestScraper(unittest.TestCase):
         mock_resp.text = html_content
         mock_get.return_value = mock_resp
 
-        # Mock requests.get for the secure jQuery library download
-        mock_jq_resp = MagicMock()
-        mock_jq_resp.status_code = 200
-        mock_jq_resp.content = b"fake jquery 3.7.1 content"
-        mock_req_get.return_value = mock_jq_resp
+        # Mock requests.get for secure downloads (jQuery & Bootstrap)
+        def req_get_side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            if 'jquery' in url:
+                resp.content = b"fake jquery 3.7.1 content"
+            elif 'bootstrap' in url:
+                resp.content = b"fake bootstrap 4.6.2 content"
+            return resp
+        mock_req_get.side_effect = req_get_side_effect
 
         temp_dir = tempfile.mkdtemp()
         scraper.output_dir = temp_dir
@@ -388,13 +397,21 @@ class TestScraper(unittest.TestCase):
             with open(expected_jq_file, 'rb') as f:
                 self.assertEqual(f.read(), b"fake jquery 3.7.1 content")
 
+            # Verify local secure Bootstrap file was created on disk
+            expected_bs_file = os.path.join(temp_dir, "profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min.js")
+            self.assertTrue(os.path.exists(expected_bs_file))
+            with open(expected_bs_file, 'rb') as f:
+                self.assertEqual(f.read(), b"fake bootstrap 4.6.2 content")
+
             scripts = soup.find_all('script', src=True)
-            self.assertEqual(len(scripts), 2)
+            self.assertEqual(len(scripts), 3)
 
             # First script should be rewritten to point to local secure jQuery
             self.assertEqual(scripts[0]['src'], "core/assets/vendor/jquery/jquery.min.js")
-            # Second script should remain relative
-            self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
+            # Second script should be rewritten to point to local secure Bootstrap
+            self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/bootstrap/js/bootstrap.min.js")
+            # Third script should remain relative
+            self.assertEqual(scripts[2]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
 
         finally:
             scraper.self_contain = False # Reset state
