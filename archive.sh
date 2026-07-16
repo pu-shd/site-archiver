@@ -232,55 +232,9 @@ fi
 # Create .nojekyll file to ensure GitHub Pages serves underscore folders
 touch .nojekyll
 
-# Create .github/workflows directory and codeql.yml to disable JavaScript scanning
-mkdir -p .github/workflows
-cat <<'EOF' > .github/workflows/codeql.yml
-name: "CodeQL"
-
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  schedule:
-    - cron: '0 0 * * 0'
-
-jobs:
-  analyze:
-    name: Analyze
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
-      with:
-        languages: 'actions'
-        config-file: ./.github/codeql/codeql-config.yml
-
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
-EOF
-
-# Create CodeQL configuration file to ignore JavaScript and vendor paths
-mkdir -p .github/codeql
-cat <<'EOF' > .github/codeql/codeql-config.yml
-name: "CodeQL Ignore Config"
-
-paths-ignore:
-  - '**/*.js'
-  - '**/node_modules/**'
-  - '**/bower_components/**'
-EOF
-
 git add .
 git commit -m "Mirror of $TARGET_URL on $(date)"
+
 
 
 # 7. Create Repo on GitHub and Push

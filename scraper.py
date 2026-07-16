@@ -438,9 +438,39 @@ def crawl_page(url):
                     link['href'] = new_href
 
         # 2. Process scripts (<script src="...">)
+        EXCLUDED_SCRIPTS = [
+            'ckeditor',
+            '/core/misc/ajax.js',
+            '/core/misc/progress.js',
+            '/core/misc/form.js',
+            '/core/assets/vendor/tabbable',
+            '/core/assets/vendor/tua-body-scroll-lock',
+            '/jquery.ui',
+            'google_tag',
+            'gtag',
+            'linkpurpose'
+        ]
+
         for script in soup.find_all('script'):
             src = script.get('src')
             if src:
+                # 1. Check for jquery.min.js and redirect to public CDN
+                if 'jquery.min.js' in src:
+                    script['src'] = "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+                    continue
+
+                # 2. Check for excluded script patterns
+                should_exclude = False
+                for pattern in EXCLUDED_SCRIPTS:
+                    if pattern in src:
+                        should_exclude = True
+                        break
+
+                if should_exclude:
+                    script.decompose()
+                    continue
+
+                # 3. Check for MathJax and redirect
                 if 'MathJax.js' in src or 'MathJax_config' in src:
                     # Redirect to CDN to avoid downloading and hosting massive MathJax library with dynamic plugin dependencies
                     script['src'] = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.9/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
@@ -448,6 +478,7 @@ def crawl_page(url):
                     new_src = make_relative(src, is_target_page=False)
                     if new_src != src:
                         script['src'] = new_src
+
 
         # 3. Process images (<img src="..." srcset="...">)
         for img in soup.find_all(['img', 'source']):

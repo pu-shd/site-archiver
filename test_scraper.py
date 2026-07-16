@@ -302,6 +302,47 @@ class TestScraper(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    @patch('scraper.session.get')
+    def test_jquery_redirect_and_script_exclusions(self, mock_get):
+        html_content = """
+        <html>
+            <head>
+                <script src="../core/assets/vendor/jquery/jquery.min.js"></script>
+                <script src="../core/modules/ckeditor5/js/ckeditor5.dialog.fix.js"></script>
+                <script src="../profiles/ps/themes/ps_base/js/main-menu.js"></script>
+            </head>
+            <body></body>
+        </html>
+        """
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {'Content-Type': 'text/html'}
+        mock_resp.text = html_content
+        mock_get.return_value = mock_resp
+
+        temp_dir = tempfile.mkdtemp()
+        scraper.output_dir = temp_dir
+
+        try:
+            scraper.crawl_page("https://fan60.princeton.edu/")
+
+            expected_html_file = os.path.join(temp_dir, "index.html")
+            self.assertTrue(os.path.exists(expected_html_file))
+            with open(expected_html_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f.read(), 'html.parser')
+
+            scripts = soup.find_all('script')
+            # The CKEditor script should be decomposed, leaving only jQuery (redirected) and main-menu
+            self.assertEqual(len(scripts), 2)
+
+            # First script should be redirected to jQuery CDN
+            self.assertEqual(scripts[0]['src'], "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js")
+            # Second script should remain relative
+            self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
+
+        finally:
+            shutil.rmtree(temp_dir)
+
 if __name__ == '__main__':
     unittest.main()
 
