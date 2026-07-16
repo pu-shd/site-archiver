@@ -439,11 +439,40 @@ def crawl_page(url):
                         return urllib.parse.quote(rel_path, safe='/')
                 return target_url
 
+        # Define scripts and stylesheet patterns to exclude to ensure zero vulnerabilities and zero 404/Reference errors
+        EXCLUDED_SCRIPTS = [
+            'ckeditor',
+            '/core/misc/ajax.js',
+            '/core/misc/progress.js',
+            '/core/misc/form.js',
+            '/core/assets/vendor/tabbable',
+            '/core/assets/vendor/tua-body-scroll-lock',
+            '/jquery.ui',
+            'jquery-ui',
+            'google_tag',
+            'gtag',
+            'linkpurpose',
+            'smartquotes',
+            'aria-autocomplete',
+            'dialog.js',
+            'dialog.jquery-ui.js'
+        ]
+
         # 1. Process stylesheet/asset links (<link>)
         for link in soup.find_all('link'):
             rel = [r.lower() for r in link.get('rel', [])]
             href = link.get('href')
             if href:
+                # Check for excluded patterns
+                should_exclude = False
+                for pattern in EXCLUDED_SCRIPTS:
+                    if pattern in href:
+                        should_exclude = True
+                        break
+                if should_exclude:
+                    link.decompose()
+                    continue
+
                 resolved_href = urllib.parse.urljoin(url, href)
                 resolved_href = clean_url(resolved_href)
                 
@@ -459,19 +488,6 @@ def crawl_page(url):
                     link['href'] = new_href
 
         # 2. Process scripts (<script src="...">)
-        EXCLUDED_SCRIPTS = [
-            'ckeditor',
-            '/core/misc/ajax.js',
-            '/core/misc/progress.js',
-            '/core/misc/form.js',
-            '/core/assets/vendor/tabbable',
-            '/core/assets/vendor/tua-body-scroll-lock',
-            '/jquery.ui',
-            'google_tag',
-            'gtag',
-            'linkpurpose'
-        ]
-
         for script in soup.find_all('script'):
             src = script.get('src')
             if src:
@@ -575,6 +591,20 @@ def crawl_page(url):
                     escaped_url = re.escape(asset_url)
                     style = re.sub(r'url\s*\(\s*[\'"]?' + escaped_url + r'[\'"]?\s*\)', f"url('{new_url}')", style)
             el['style'] = style
+
+        # Inject global Drupal / drupalSettings shim to prevent ReferenceErrors from missing/stripped core files
+        if not soup.find(id='drupal-static-shim'):
+            shim = soup.new_tag('script', id='drupal-static-shim')
+            shim.string = (
+                "window.Drupal = window.Drupal || { behaviors: {}, locale: {} };\n"
+                "window.drupalSettings = window.drupalSettings || {};\n"
+                "window.Drupal.t = window.Drupal.t || function(str) { return str; };\n"
+                "window.bodyScrollLock = window.bodyScrollLock || { disableBodyScroll: function() {}, enableBodyScroll: function() {}, clearAllBodyScrollLocks: function() {} };\n"
+                "window.smartquotes = window.smartquotes || function() {};\n"
+                "window.AriaAutocomplete = window.AriaAutocomplete || function() {};"
+            )
+            if soup.head:
+                soup.head.insert(0, shim)
 
         # Write modified HTML page
         os.makedirs(os.path.dirname(local_abs_path), exist_ok=True)

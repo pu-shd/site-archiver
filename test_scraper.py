@@ -289,7 +289,7 @@ class TestScraper(unittest.TestCase):
             self.assertTrue(os.path.exists(expected_html_file))
             with open(expected_html_file, 'r', encoding='utf-8') as f:
                 soup = BeautifulSoup(f.read(), 'html.parser')
-            script_src = soup.find('script')['src']
+            script_src = soup.find('script', src=True)['src']
             self.assertEqual(script_src, "https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.9/MathJax.js?config=TeX-AMS-MML_HTMLorMML")
             
             # Check CSS source map removal
@@ -332,7 +332,7 @@ class TestScraper(unittest.TestCase):
             with open(expected_html_file, 'r', encoding='utf-8') as f:
                 soup = BeautifulSoup(f.read(), 'html.parser')
 
-            scripts = soup.find_all('script')
+            scripts = soup.find_all('script', src=True)
             # The CKEditor script should be decomposed, leaving only jQuery (redirected) and main-menu
             self.assertEqual(len(scripts), 2)
 
@@ -388,7 +388,7 @@ class TestScraper(unittest.TestCase):
             with open(expected_jq_file, 'rb') as f:
                 self.assertEqual(f.read(), b"fake jquery 3.7.1 content")
 
-            scripts = soup.find_all('script')
+            scripts = soup.find_all('script', src=True)
             self.assertEqual(len(scripts), 2)
 
             # First script should be rewritten to point to local secure jQuery
