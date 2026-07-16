@@ -24,6 +24,7 @@ OUTPUT_DIR=""
 REPO_PATH=""
 ALLOWED_ASSETS="*.princeton.edu"
 BYPASS_HEADER_VAL=""
+SELF_CONTAIN="false"
 
 # Show Banner
 show_banner() {
@@ -45,6 +46,7 @@ show_help() {
     echo "  -r, --repo <org/repo>  GitHub Repository (e.g., pu-orfe/fan60)"
     echo "  -a, --assets <doms>    Comma-separated asset domains allowed (default: *.princeton.edu)"
     echo "  -b, --bypass <val>     Value of x-wdsoit-bot-bypass header (Treat as secret)"
+    echo "  -s, --self-contain     Self-contain assets locally instead of using public CDNs"
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Example:"
@@ -74,6 +76,10 @@ while [[ $# -gt 0 ]]; do
         -b|--bypass)
             BYPASS_HEADER_VAL="$2"
             shift 2
+            ;;
+        -s|--self-contain)
+            SELF_CONTAIN="true"
+            shift
             ;;
         -h|--help)
             show_help
@@ -154,6 +160,7 @@ echo -e "  - Target URL:       ${BOLD}$TARGET_URL${NC}"
 echo -e "  - Allowed Assets:   ${BOLD}$ALLOWED_ASSETS${NC}"
 echo -e "  - Local Output Dir: ${BOLD}$ABS_OUTPUT_DIR${NC}"
 echo -e "  - GitHub Repo:      ${BOLD}$REPO_PATH${NC}"
+echo -e "  - Self-Contained:   ${BOLD}$SELF_CONTAIN${NC}"
 if [ -n "$BYPASS_HEADER_VAL" ]; then
     echo -e "  - Bypass Header:    ${YELLOW}[SET (HIDDEN)]${NC}"
 else
@@ -177,6 +184,7 @@ cat <<EOF > "$CONFIG_FILE"
   "url": "$TARGET_URL",
   "output_dir": "/output",
   "allowed_asset_domains": "$ALLOWED_ASSETS",
+  "self_contain": $SELF_CONTAIN,
   "headers": $HEADERS_JSON
 }
 EOF

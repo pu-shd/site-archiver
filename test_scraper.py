@@ -324,6 +324,7 @@ class TestScraper(unittest.TestCase):
         scraper.output_dir = temp_dir
 
         try:
+            scraper.self_contain = False
             scraper.crawl_page("https://fan60.princeton.edu/")
 
             expected_html_file = os.path.join(temp_dir, "index.html")
@@ -341,6 +342,62 @@ class TestScraper(unittest.TestCase):
             self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
 
         finally:
+            shutil.rmtree(temp_dir)
+
+    @patch('scraper.session.get')
+    @patch('requests.get')
+    def test_jquery_self_containment(self, mock_req_get, mock_get):
+        # Set self_contain config to True
+        scraper.self_contain = True
+
+        html_content = """
+        <html>
+            <head>
+                <script src="../core/assets/vendor/jquery/jquery.min.js"></script>
+                <script src="../profiles/ps/themes/ps_base/js/main-menu.js"></script>
+            </head>
+            <body></body>
+        </html>
+        """
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {'Content-Type': 'text/html'}
+        mock_resp.text = html_content
+        mock_get.return_value = mock_resp
+
+        # Mock requests.get for the secure jQuery library download
+        mock_jq_resp = MagicMock()
+        mock_jq_resp.status_code = 200
+        mock_jq_resp.content = b"fake jquery 3.7.1 content"
+        mock_req_get.return_value = mock_jq_resp
+
+        temp_dir = tempfile.mkdtemp()
+        scraper.output_dir = temp_dir
+
+        try:
+            scraper.crawl_page("https://fan60.princeton.edu/")
+
+            expected_html_file = os.path.join(temp_dir, "index.html")
+            self.assertTrue(os.path.exists(expected_html_file))
+            with open(expected_html_file, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f.read(), 'html.parser')
+
+            # Verify local secure jQuery file was created on disk
+            expected_jq_file = os.path.join(temp_dir, "core/assets/vendor/jquery/jquery.min.js")
+            self.assertTrue(os.path.exists(expected_jq_file))
+            with open(expected_jq_file, 'rb') as f:
+                self.assertEqual(f.read(), b"fake jquery 3.7.1 content")
+
+            scripts = soup.find_all('script')
+            self.assertEqual(len(scripts), 2)
+
+            # First script should be rewritten to point to local secure jQuery
+            self.assertEqual(scripts[0]['src'], "core/assets/vendor/jquery/jquery.min.js")
+            # Second script should remain relative
+            self.assertEqual(scripts[1]['src'], "profiles/ps/themes/ps_base/js/main-menu.js")
+
+        finally:
+            scraper.self_contain = False # Reset state
             shutil.rmtree(temp_dir)
 
 if __name__ == '__main__':

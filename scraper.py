@@ -17,6 +17,7 @@ target_domain = None
 allowed_asset_domains = []
 output_dir = None
 headers = {}
+self_contain = False
 
 # Keep track of crawled pages and assets
 crawled_pages = set()
@@ -186,6 +187,26 @@ def process_js_file(js_abs_path):
                 f.write(cleaned)
     except Exception as e:
         print(f"[!] Error processing JS {js_abs_path}: {e}")
+
+def download_secure_jquery():
+    """Download secure jQuery 3.7.1 and save it locally as core/assets/vendor/jquery/jquery.min.js."""
+    local_path = "core/assets/vendor/jquery/jquery.min.js"
+    abs_path = os.path.join(output_dir, local_path)
+    if os.path.exists(abs_path):
+        return local_path
+
+    print("[*] Downloading secure jQuery 3.7.1 for self-contained mode...")
+    try:
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        res = requests.get("https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js", timeout=15)
+        if res.status_code == 200:
+            with open(abs_path, 'wb') as f:
+                f.write(res.content)
+            return local_path
+    except Exception as e:
+        print(f"[!] Error downloading secure jQuery: {e}")
+    return None
+
 
 def process_css_file(css_abs_path, css_url):
     """Scan a CSS file for url(...) imports, download assets, and rewrite them relative to the CSS file."""
@@ -454,10 +475,19 @@ def crawl_page(url):
         for script in soup.find_all('script'):
             src = script.get('src')
             if src:
-                # 1. Check for jquery.min.js and redirect to public CDN
+                # 1. Check for jquery.min.js and redirect/self-contain
                 if 'jquery.min.js' in src:
-                    script['src'] = "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+                    if self_contain:
+                        local_jq = download_secure_jquery()
+                        if local_jq:
+                            rel_path = os.path.relpath(local_jq, current_page_rel_dir)
+                            script['src'] = urllib.parse.quote(rel_path, safe='/')
+                        else:
+                            script['src'] = "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+                    else:
+                        script['src'] = "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js"
                     continue
+
 
                 # 2. Check for excluded script patterns
                 should_exclude = False
@@ -560,19 +590,21 @@ def crawl_page(url):
         print(f"[!] Error crawling page {url}: {e}")
 
 def main():
-    global seed_url, target_domain, allowed_asset_domains, output_dir, headers
-    
+    global seed_url, target_domain, allowed_asset_domains, output_dir, headers, self_contain
+
     if len(sys.argv) < 2:
         print("Usage: scraper.py <config.json>")
         sys.exit(1)
-        
+
     config_path = sys.argv[1]
     with open(config_path, 'r') as f:
         config = json.load(f)
-        
+
     seed_url = config.get('url')
     output_dir = config.get('output_dir')
     headers = config.get('headers', {})
+    self_contain = config.get('self_contain', False)
+
     
     parsed_seed = urllib.parse.urlparse(seed_url)
     target_domain = parsed_seed.netloc.lower()
@@ -589,6 +621,7 @@ def main():
     print(f"Target Domain: {target_domain}")
     print(f"Allowed Asset Domains: {allowed_asset_domains}")
     print(f"Output Directory: {output_dir}")
+    print(f"Self-Contained Mode: {self_contain}")
     print(f"Custom Headers: {list(headers.keys())}")
     print("=======================")
     
