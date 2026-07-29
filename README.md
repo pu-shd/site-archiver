@@ -84,3 +84,5 @@ To run against the host Python instead:
 ```bash
 ./run_tests.sh --local
 ```
+
+CI runs the same containerized suite on every push and pull request to `main` (`.github/workflows/test.yml`), and additionally asserts that a plain `docker build` still produces the scraper runtime image.

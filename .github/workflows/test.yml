@@ -1,0 +1,54 @@
+name: Test Suite
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'LICENSE'
+      - 'docs/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - 'LICENSE'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Validate and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Verify Scraper Compiles
+        run: |
+          python3 -m py_compile scraper.py test_scraper.py
+
+      - name: Run Containerized Test Suite
+        run: |
+          # Build the test stage and run the unit suite inside it, matching
+          # what ./run_tests.sh does locally.
+          docker build --target test -t site-archiver-tests .
+          docker run --rm site-archiver-tests
+
+      - name: Verify Runtime Image Still Builds
+        run: |
+          # A plain build must keep producing the scraper runtime, so the test
+          # stage cannot quietly become the default target.
+          docker build -t site-archiver-scraper .
+          ENTRYPOINT=$(docker inspect site-archiver-scraper --format '{{json .Config.Entrypoint}}')
+          echo "Runtime entrypoint: $ENTRYPOINT"
+          if [ "$ENTRYPOINT" != '["python","/app/scraper.py"]' ]; then
+            echo "::error::Runtime image entrypoint changed unexpectedly: $ENTRYPOINT"
+            exit 1
+          fi
