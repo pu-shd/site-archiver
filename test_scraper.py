@@ -417,6 +417,213 @@ class TestScraper(unittest.TestCase):
             scraper.self_contain = False # Reset state
             shutil.rmtree(temp_dir)
 
+
+class TestJsSecurityHardening(unittest.TestCase):
+    """Covers the rewrites that stop known-vulnerable CMS JavaScript from being
+    published into an archived static site."""
+
+    def setUp(self):
+        scraper.output_dir = "/output"
+
+    # -- lazy-loading image URLs -------------------------------------------
+
+    RANDOM_IMAGE = (
+        "(function ($, Drupal, once) {\n"
+        "  'use strict';\n"
+        "\n"
+        "  Drupal.behaviors.random_image = {\n"
+        "    attach: function (context, settings) {\n"
+        "            let $image = $('img', this);\n"
+        "            if ($image.length) {\n"
+        "              const dataSrc = $($image).attr('data-src');\n"
+        "              if (dataSrc) {\n"
+        "                $($image).attr('src', dataSrc)\n"
+        "              }\n"
+        "              const dataSrcSet = $($image).attr('data-srcset');\n"
+        "              if (dataSrcSet) {\n"
+        "                $($image).attr('srcset', dataSrcSet)\n"
+        "              }\n"
+        "            }\n"
+        "    }\n"
+        "  };\n"
+        "}(jQuery, Drupal, once));\n"
+    )
+
+    IMAGE_GALLERY = (
+        "(function ($, Drupal, once) {\n"
+        "  'use strict';\n"
+        "  Drupal.behaviors.ps_image_gallery = {\n"
+        "    attach: function (context, settings) {\n"
+        "          if ($imageElement.length && $imageElement.attr('data-src')) {\n"
+        "            $imageElement\n"
+        "              .attr('srcset', $imageElement.attr('data-srcset'))\n"
+        "              .removeAttr('data-srcset')\n"
+        "              .attr('src', $imageElement.attr('data-src'))\n"
+        "              .removeAttr('data-src');\n"
+        "          }\n"
+        "    }\n"
+        "  };\n"
+        "}(jQuery, Drupal, once));\n"
+    )
+
+    def test_random_image_urls_are_validated(self):
+        path = "profiles/ps/modules/custom/ps_core/js/random-image_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(self.RANDOM_IMAGE, path)
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        # Helpers are injected and the raw value no longer reaches src.
+        self.assertIn("function resolveImageUrl", out)
+        self.assertIn("function isValidImageSrcSet", out)
+        self.assertIn("$($image).attr('src', resolvedSrc);", out)
+        self.assertIn("isValidImageSrcSet(dataSrcSet)", out)
+        self.assertNotIn("$($image).attr('src', dataSrc)", out)
+
+    def test_image_gallery_urls_are_validated(self):
+        path = "profiles/ps/modules/custom/ps_image_gallery/js/image_gallery_te79on.js"
+        out, applied, residual = scraper.harden_js_content(self.IMAGE_GALLERY, path)
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        self.assertIn("function resolveImageUrl", out)
+        self.assertIn("resolveImageUrl($imageElement.attr('data-src'))", out)
+        self.assertIn("isValidImageSrcSet(dataSrcSet)", out)
+        # The unguarded chained assignment is gone.
+        self.assertNotIn(".attr('src', $imageElement.attr('data-src'))", out)
+
+    def test_helpers_are_injected_once(self):
+        path = "profiles/ps/modules/custom/ps_core/js/random-image_te79rq.js"
+        once_out, _, _ = scraper.harden_js_content(self.RANDOM_IMAGE, path)
+        twice_out, applied, _ = scraper.harden_js_content(once_out, path)
+
+        # Re-running is a no-op: nothing matches and helpers are not duplicated.
+        self.assertEqual(applied, [])
+        self.assertEqual(once_out, twice_out)
+        self.assertEqual(twice_out.count("function resolveImageUrl"), 1)
+
+    def test_helper_injection_requires_use_strict_anchor(self):
+        # Without a 'use strict' anchor the helpers cannot be placed safely, so
+        # the patch is skipped rather than producing broken JavaScript.
+        no_anchor = self.RANDOM_IMAGE.replace("  'use strict';\n", "")
+        path = "profiles/ps/modules/custom/ps_core/js/random-image_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(no_anchor, path)
+
+        self.assertEqual(applied, [])
+        self.assertEqual(out, no_anchor)
+        # The sink is still there, so the drift detector must report it.
+        self.assertIn('unvalidated lazy-load image URL', residual)
+
+    # -- DOM text reinterpreted as HTML ------------------------------------
+
+    def test_content_list_a11y_builds_span_as_text(self):
+        src = (
+            "              if ($dateBadge.data('prepend')) {\n"
+            "                let markup = '<span class=\"sr-only\">' + $dateBadge.text() + ': </span>';\n"
+            "                $(this).find('.field--name-title').prepend(markup);\n"
+            "              }\n"
+        )
+        path = "profiles/ps/modules/custom/ps_core/js/content_list_a11y_enhancer_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(src, path)
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        self.assertIn(".text($dateBadge.text() + ': ')", out)
+        self.assertIn("prepend($markup)", out)
+        self.assertNotIn("'<span class=\"sr-only\">' + $dateBadge.text()", out)
+
+    def test_enhanced_date_sets_label_as_text(self):
+        src = (
+            "            let $addToCalLink = $('<a href=\"#\" class=\"add-to-calendar\" "
+            "role=\"button\"><span class=\"visually-hidden\">' + allyText + '</span>"
+            "<span class=\"add-to-calendar-icon\" title=\"Add to calendar\">&#128197;</span></a>');\n"
+        )
+        path = "profiles/ps/modules/custom/enhanced_date/js/enhanced_date_field_formatter_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(src, path)
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        self.assertIn("$addToCalLink.find('.visually-hidden').text(allyText);", out)
+        self.assertNotIn("' + allyText + '", out)
+        # The icon markup must survive the rewrite intact.
+        self.assertIn("&#128197;", out)
+
+    def test_main_menu_prepends_text_node(self):
+        src = "      $(this).find('.sr-only').prepend($(this).prev().text() + ' ');\n"
+        path = "profiles/ps/themes/ps_base/js/main-menu_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(src, path)
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        self.assertIn("document.createTextNode($(this).prev().text() + ' ')", out)
+
+    # -- unsafe jQuery plugin ----------------------------------------------
+
+    def test_position_plugin_option_not_passed_as_markup(self):
+        src = (
+            "    const target =\n"
+            "      typeof options.of === 'string'\n"
+            "        ? $(document).find(options.of)\n"
+            "        : $(options.of);\n"
+        )
+        out, applied, residual = scraper.harden_js_content(src, "core/misc/position.js")
+
+        self.assertEqual(residual, [])
+        self.assertEqual(len(applied), 1)
+        self.assertIn("$().add(ofOption)", out)
+        self.assertNotIn("$(options.of)", out)
+
+    # -- targeting and drift ------------------------------------------------
+
+    def test_patches_only_apply_to_matching_paths(self):
+        # The same snippet in an unrelated file must be left alone.
+        out, applied, residual = scraper.harden_js_content(
+            self.RANDOM_IMAGE, "profiles/ps/themes/ps_base/js/unrelated.js")
+        self.assertEqual(applied, [])
+        self.assertEqual(residual, [])
+        self.assertEqual(out, self.RANDOM_IMAGE)
+
+    def test_unrelated_javascript_is_untouched(self):
+        src = "(function () {\n  'use strict';\n  console.log('hello');\n}());\n"
+        out, applied, residual = scraper.harden_js_content(src, "themes/custom/app.js")
+        self.assertEqual(applied, [])
+        self.assertEqual(residual, [])
+        self.assertEqual(out, src)
+
+    def test_drift_is_reported_when_upstream_changes(self):
+        # Upstream renamed the variable, so the patch no longer matches. The
+        # sink is still present, so the archiver must report it rather than
+        # silently publishing vulnerable code.
+        drifted = self.RANDOM_IMAGE.replace("dataSrc", "lazySrc")
+        path = "profiles/ps/modules/custom/ps_core/js/random-image_te79rq.js"
+        out, applied, residual = scraper.harden_js_content(drifted, path)
+
+        self.assertEqual(applied, [])
+        self.assertIn('unvalidated lazy-load image URL', residual)
+
+    # -- end-to-end through the file processor ------------------------------
+
+    def test_process_js_file_hardens_and_strips_source_map(self):
+        temp_dir = tempfile.mkdtemp()
+        scraper.output_dir = temp_dir
+        try:
+            rel = "profiles/ps/modules/custom/ps_core/js/random-image_te79rq.js"
+            abs_path = os.path.join(temp_dir, rel)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, 'w', encoding='utf-8') as f:
+                f.write(self.RANDOM_IMAGE + "//# sourceMappingURL=random-image.js.map\n")
+
+            scraper.process_js_file(abs_path)
+
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                saved = f.read()
+            self.assertNotIn("sourceMappingURL", saved)
+            self.assertIn("function resolveImageUrl", saved)
+            self.assertNotIn("$($image).attr('src', dataSrc)", saved)
+        finally:
+            scraper.output_dir = "/output"
+            shutil.rmtree(temp_dir)
+
+
 if __name__ == '__main__':
     unittest.main()
 

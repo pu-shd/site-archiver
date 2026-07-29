@@ -176,15 +176,316 @@ def download_asset(url):
         print(f"[!] Error downloading asset {url}: {e}")
         return url
 
+# ---------------------------------------------------------------------------
+# JavaScript security hardening
+#
+# The upstream CMS ships a handful of behaviours that are safe enough behind a
+# server that controls its own markup, but that trip static analysis (CodeQL)
+# once the output is published as a static site. Rather than fixing the same
+# findings by hand in every archived repository, the archiver rewrites the
+# known patterns as it downloads them.
+#
+# Each patch is a targeted rewrite of a known upstream snippet. Patches are
+# deliberately narrow: if upstream changes, the patch simply stops matching and
+# the drift detector below reports the unpatched sink instead of silently
+# emitting vulnerable code.
+# ---------------------------------------------------------------------------
+
+# Shared helpers injected into files that assign lazy-loading image URLs.
+JS_URL_HELPERS = """
+  /**
+   * Resolves a lazy-loading image URL read from a data attribute.
+   *
+   * The URL is parsed so that only http and https URLs are ever assigned, and
+   * every other scheme (javascript:, data:, vbscript:, ...) is rejected.
+   * Parsing also normalises away the whitespace and control characters that
+   * browsers ignore when reading a scheme, so a scheme with a tab or newline
+   * inside it cannot slip past.
+   *
+   * @param {string} url
+   *   The candidate URL, absolute or relative to the current document.
+   *
+   * @return {?string}
+   *   The resolved absolute URL, or null when it is not safe to assign.
+   */
+  function resolveImageUrl(url) {
+    let parsed;
+    try {
+      parsed = new URL(url, window.location.href);
+    }
+    catch (e) {
+      // Not a URL we can make sense of, so refuse to assign it.
+      return null;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.href;
+  }
+
+  /**
+   * Validates a lazy-loading srcset value read from a data attribute.
+   *
+   * Each comma separated candidate is resolved whole, descriptor included, so
+   * that a scheme split across whitespace cannot hide from the check.
+   *
+   * @param {string} srcSet
+   *   The candidate srcset, a comma separated list of URL/descriptor pairs.
+   *
+   * @return {boolean}
+   *   TRUE when every candidate in the set is safe to assign.
+   */
+  function isValidImageSrcSet(srcSet) {
+    return srcSet.split(',').every(function (candidate) {
+      return resolveImageUrl(candidate) !== null;
+    });
+  }
+"""
+
+JS_SECURITY_PATCHES = [
+    {
+        # ps_core/random-image.js assigns data-src/data-srcset straight to the
+        # img element, so a poisoned data attribute reaches src/srcset.
+        'name': 'random-image: validate lazy-load URLs',
+        'path': re.compile(r'random-image[^/]*\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"const dataSrc = \$\(\$image\)\.attr\('data-src'\);\s*"
+            r"if \(dataSrc\) \{\s*"
+            r"\$\(\$image\)\.attr\('src', dataSrc\);?\s*"
+            r"\}\s*"
+            r"const dataSrcSet = \$\(\$image\)\.attr\('data-srcset'\);\s*"
+            r"if \(dataSrcSet\) \{\s*"
+            r"\$\(\$image\)\.attr\('srcset', dataSrcSet\);?\s*"
+            r"\}"
+        ),
+        'replace': (
+            "const dataSrc = $($image).attr('data-src');\n"
+            "              // Assign the resolved URL rather than the raw attribute value,\n"
+            "              // so only a URL that parsed as http(s) can reach src.\n"
+            "              const resolvedSrc = dataSrc ? resolveImageUrl(dataSrc) : null;\n"
+            "              if (resolvedSrc) {\n"
+            "                $($image).attr('src', resolvedSrc);\n"
+            "              }\n"
+            "              const dataSrcSet = $($image).attr('data-srcset');\n"
+            "              if (dataSrcSet && isValidImageSrcSet(dataSrcSet)) {\n"
+            "                $($image).attr('srcset', dataSrcSet);\n"
+            "              }"
+        ),
+        'needs_url_helpers': True,
+    },
+    {
+        # ps_image_gallery chains the data attributes straight onto the element.
+        'name': 'image-gallery: validate lazy-load URLs',
+        'path': re.compile(r'image_gallery[^/]*\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"\$imageElement\s*"
+            r"\.attr\('srcset', \$imageElement\.attr\('data-srcset'\)\)\s*"
+            r"\.removeAttr\('data-srcset'\)\s*"
+            r"\.attr\('src', \$imageElement\.attr\('data-src'\)\)\s*"
+            r"\.removeAttr\('data-src'\);"
+        ),
+        'replace': (
+            "const dataSrcSet = $imageElement.attr('data-srcset');\n"
+            "            if (dataSrcSet && isValidImageSrcSet(dataSrcSet)) {\n"
+            "              $imageElement.attr('srcset', dataSrcSet);\n"
+            "            }\n"
+            "            $imageElement.removeAttr('data-srcset');\n"
+            "            // Assign the resolved URL rather than the raw attribute value,\n"
+            "            // so only a URL that parsed as http(s) can reach src.\n"
+            "            const resolvedSrc = resolveImageUrl($imageElement.attr('data-src'));\n"
+            "            if (resolvedSrc) {\n"
+            "              $imageElement.attr('src', resolvedSrc);\n"
+            "            }\n"
+            "            $imageElement.removeAttr('data-src');"
+        ),
+        'needs_url_helpers': True,
+    },
+    {
+        # Date badge text is concatenated into an HTML string before prepend().
+        'name': 'content-list-a11y: build sr-only span as text',
+        'path': re.compile(r'content_list_a11y_enhancer[^/]*\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"let markup = '<span class=\"sr-only\">' \+ \$dateBadge\.text\(\) \+ ': </span>';\s*"
+            r"\$\(this\)\.find\('\.field--name-title'\)\.prepend\(markup\);"
+        ),
+        'replace': (
+            "let $markup = $('<span class=\"sr-only\"></span>').text($dateBadge.text() + ': ');\n"
+            "                $(this).find('.field--name-title').prepend($markup);"
+        ),
+        'needs_url_helpers': False,
+    },
+    {
+        # Date text is concatenated into the add-to-calendar link markup.
+        'name': 'enhanced-date: set link label as text',
+        'path': re.compile(r'enhanced_date_field_formatter[^/]*\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"let \$addToCalLink = \$\('<a href=\"#\" class=\"add-to-calendar\" role=\"button\">"
+            r"<span class=\"visually-hidden\">' \+ allyText \+ '</span>"
+            r"(<span class=\"add-to-calendar-icon\" title=\"Add to calendar\">&#128197;</span></a>'\);)"
+        ),
+        'replace': (
+            "let $addToCalLink = $('<a href=\"#\" class=\"add-to-calendar\" role=\"button\">"
+            "<span class=\"visually-hidden\"></span>\\1\n"
+            "            $addToCalLink.find('.visually-hidden').text(allyText);"
+        ),
+        'needs_url_helpers': False,
+    },
+    {
+        # Parent menu text is concatenated into prepend(), which parses HTML.
+        'name': 'main-menu: prepend label as a text node',
+        'path': re.compile(r'main-menu[^/]*\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"\$\(this\)\.find\('\.sr-only'\)\.prepend\(\$\(this\)\.prev\(\)\.text\(\) \+ ' '\);"
+        ),
+        'replace': (
+            "$(this).find('.sr-only').prepend("
+            "document.createTextNode($(this).prev().text() + ' '));"
+        ),
+        'needs_url_helpers': False,
+    },
+    {
+        # jQuery UI position(): options.of reaches $() and could be parsed as
+        # markup. The string case is already routed through find().
+        'name': 'position: never pass plugin option to $() as markup',
+        'path': re.compile(r'(^|/)position\.js$', re.IGNORECASE),
+        'find': re.compile(
+            r"const target =\s*"
+            r"typeof options\.of === 'string'\s*"
+            r"\? \$\(document\)\.find\(options\.of\)\s*"
+            r": \$\(options\.of\);"
+        ),
+        'replace': (
+            "const ofOption = options.of;\n"
+            "    const target =\n"
+            "      typeof ofOption === 'string'\n"
+            "        ? $(document).find(ofOption)\n"
+            "        : $().add(ofOption);"
+        ),
+        'needs_url_helpers': False,
+    },
+]
+
+# Sinks that must not survive hardening. Each entry is
+# (path pattern, sink pattern, required marker, label): a residual is reported
+# when the sink is present and the marker (if any) is missing. If one of these
+# fires, the archive is emitting code that CodeQL will flag, so the archiver
+# says so loudly instead of leaving it to be discovered in review.
+JS_RESIDUAL_SINKS = [
+    (
+        re.compile(r'random-image[^/]*\.js$', re.IGNORECASE),
+        re.compile(r"attr\('data-src'\)"),
+        'resolveImageUrl',
+        'unvalidated lazy-load image URL',
+    ),
+    (
+        re.compile(r'image_gallery[^/]*\.js$', re.IGNORECASE),
+        re.compile(r"attr\('data-src'\)"),
+        'resolveImageUrl',
+        'unvalidated lazy-load image URL',
+    ),
+    (
+        re.compile(r'content_list_a11y_enhancer[^/]*\.js$', re.IGNORECASE),
+        re.compile(r"'<span[^']*'\s*\+\s*\$dateBadge\.text\(\)"),
+        None,
+        'DOM text concatenated into HTML',
+    ),
+    (
+        re.compile(r'enhanced_date_field_formatter[^/]*\.js$', re.IGNORECASE),
+        re.compile(r"'\s*\+\s*allyText\s*\+\s*'"),
+        None,
+        'DOM text concatenated into HTML',
+    ),
+    (
+        re.compile(r'main-menu[^/]*\.js$', re.IGNORECASE),
+        re.compile(r"\.prepend\(\$\(this\)\.prev\(\)\.text\(\)"),
+        None,
+        'DOM text concatenated into HTML',
+    ),
+    (
+        re.compile(r'(^|/)position\.js$', re.IGNORECASE),
+        re.compile(r":\s*\$\(options\.of\)"),
+        None,
+        'unsafe jQuery plugin option',
+    ),
+]
+
+
+def inject_js_helpers(content, helpers):
+    """Insert shared helper functions after the IIFE's 'use strict' directive."""
+    if 'function resolveImageUrl' in content:
+        return content
+    match = re.search(r"^([ \t]*)'use strict';[ \t]*\r?\n", content, flags=re.MULTILINE)
+    if not match:
+        # No recognisable insertion point, so leave the file untouched rather
+        # than guessing and producing broken JavaScript.
+        return None
+    insert_at = match.end()
+    return content[:insert_at] + helpers + content[insert_at:]
+
+
+def harden_js_content(content, rel_path):
+    """Apply known security rewrites to archived JavaScript.
+
+    Returns a (content, applied, residual) tuple where `applied` lists the
+    patch names that matched and `residual` lists vulnerable sinks that are
+    still present afterwards.
+    """
+    applied = []
+    for patch in JS_SECURITY_PATCHES:
+        if not patch['path'].search(rel_path):
+            continue
+        if not patch['find'].search(content):
+            continue
+        patched = patch['find'].sub(patch['replace'], content)
+        if patch['needs_url_helpers']:
+            with_helpers = inject_js_helpers(patched, JS_URL_HELPERS)
+            if with_helpers is None:
+                print(f"[!] Skipping '{patch['name']}' for {rel_path}: "
+                      "no 'use strict' anchor to inject helpers")
+                continue
+            patched = with_helpers
+        content = patched
+        applied.append(patch['name'])
+
+    residual = []
+    for path_re, sink_re, marker, label in JS_RESIDUAL_SINKS:
+        if not path_re.search(rel_path):
+            continue
+        if not sink_re.search(content):
+            continue
+        if marker and marker in content:
+            continue
+        residual.append(label)
+    return content, applied, residual
+
+
 def process_js_file(js_abs_path):
-    """Strip sourceMappingURL comments from JS files to prevent console 404 errors."""
+    """Clean up archived JS: strip source maps and apply security hardening."""
     try:
         with open(js_abs_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-        cleaned = re.sub(r'//#\s*sourceMappingURL\s*=\s*[^\s\n\r]+', '', content, flags=re.IGNORECASE)
-        if len(cleaned) != len(content):
+            original = f.read()
+
+        content = re.sub(r'//#\s*sourceMappingURL\s*=\s*[^\s\n\r]+', '', original, flags=re.IGNORECASE)
+
+        rel_path = js_abs_path
+        if output_dir:
+            try:
+                rel_path = os.path.relpath(js_abs_path, output_dir)
+            except ValueError:
+                pass
+        rel_path = rel_path.replace(os.sep, '/')
+
+        content, applied, residual = harden_js_content(content, rel_path)
+
+        for name in applied:
+            print(f"[+] Hardened {rel_path}: {name}")
+        for label in residual:
+            print(f"[!] WARNING: {rel_path} still contains a {label}. "
+                  "The upstream code likely changed; update JS_SECURITY_PATCHES.")
+
+        if content != original:
             with open(js_abs_path, 'w', encoding='utf-8') as f:
-                f.write(cleaned)
+                f.write(content)
     except Exception as e:
         print(f"[!] Error processing JS {js_abs_path}: {e}")
 
