@@ -1,10 +1,17 @@
 import os
 import sys
 import re
+import math
+import time
 import json
 import urllib.parse
 import fnmatch
 import mimetypes
+import contextlib
+from io import BytesIO
+# warcio patches http.client when imported, so it must load before requests
+# (and urllib3) for capture_http() to see the crawler's traffic.
+from warcio.capture_http import capture_http
 import requests
 from bs4 import BeautifulSoup
 
@@ -18,6 +25,20 @@ allowed_asset_domains = []
 output_dir = None
 headers = {}
 self_contain = False
+
+# Politeness: minimum seconds between requests to the crawled site. The
+# default matches the common `wget --wait=1` convention.
+DEFAULT_CRAWL_DELAY = 1.0
+MAX_CRAWL_DELAY = 60.0
+crawl_delay = DEFAULT_CRAWL_DELAY
+_last_request_at = None
+
+# Optional WARC capture. Request headers named here (case-insensitive) are
+# sent to the server but replaced with REDACTED in the archive, so secrets
+# such as the bot bypass header never end up in a preservation copy.
+REDACTED = "[REDACTED]"
+warc_path = None
+secret_header_names = set()
 
 # Keep track of crawled pages and assets
 crawled_pages = set()
@@ -130,6 +151,105 @@ def url_to_local_path(url, is_page):
                 return f"{local_dir}{query_suffix}"
         return local_dir
 
+def parse_crawl_delay(value):
+    """Validate the configured crawl delay in seconds; None means the default."""
+    if value is None:
+        return DEFAULT_CRAWL_DELAY
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"crawl delay must be a number of seconds, got {value!r}")
+    try:
+        delay = float(value)
+    except ValueError:
+        raise ValueError(f"crawl delay must be a number of seconds, got {value!r}") from None
+    if not math.isfinite(delay) or delay < 0 or delay > MAX_CRAWL_DELAY:
+        raise ValueError(f"crawl delay must be between 0 and {MAX_CRAWL_DELAY:g} seconds, got {value!r}")
+    return delay
+
+def polite_get(url, **kwargs):
+    """GET through the shared session, spacing requests by `crawl_delay`.
+
+    The delay runs from the end of the previous request (including failed
+    ones) to the start of the next, so a slow server is never hit faster.
+    """
+    global _last_request_at
+    if crawl_delay > 0 and _last_request_at is not None:
+        remaining = crawl_delay - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            time.sleep(remaining)
+    try:
+        return session.get(url, **kwargs)
+    finally:
+        _last_request_at = time.monotonic()
+
+def redact_secret_headers(request, response, recorder):
+    """warcio filter_func: rewrite request records that carry secret headers.
+
+    The request record is rebuilt rather than edited in place so its
+    WARC-Block-Digest matches the redacted bytes.
+    """
+    http_headers = request.http_headers
+    if not http_headers or not secret_header_names:
+        return request, response
+    redacted = False
+    for name in secret_header_names:
+        if http_headers.get_header(name) is not None:
+            http_headers.replace_header(name, REDACTED)
+            redacted = True
+    if not redacted:
+        return request, response
+    payload = http_headers.to_bytes() + request.raw_stream.read()
+    request = recorder.writer.create_warc_record(
+        request.rec_headers.get_header('WARC-Target-URI'),
+        'request',
+        payload=BytesIO(payload),
+        length=len(payload),
+        warc_headers_dict=dict(recorder.warc_headers),
+    )
+    return request, response
+
+def _drop_pooled_connections():
+    """Close keep-alive connections so the next request opens a fresh one.
+
+    warcio binds its recorder to a connection when the connection is
+    created, so a pooled connection opened outside the capture would go
+    unrecorded, and one opened inside would write to a closed WARC later.
+    """
+    for adapter in session.adapters.values():
+        adapter.close()
+
+@contextlib.contextmanager
+def warc_capture(path):
+    """Record all HTTP traffic in the block to a new WARC at `path`.
+
+    With no path this is a no-op, so WARC output stays opt-in. An existing
+    file is never appended to or overwritten.
+    """
+    if not path:
+        yield None
+        return
+    _drop_pooled_connections()
+    try:
+        with capture_http(path, filter_func=redact_secret_headers, append=False,
+                          gzip=path.endswith('.gz')) as writer:
+            yield writer
+    finally:
+        _drop_pooled_connections()
+
+def validate_warc_path(path):
+    """Fail fast on a WARC destination that cannot be created."""
+    if path is None:
+        return None
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"warc_path must be a file path, got {path!r}")
+    if not path.endswith(('.warc', '.warc.gz')):
+        raise ValueError(f"warc_path must end in .warc or .warc.gz, got {path!r}")
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent) or not os.access(parent, os.W_OK):
+        raise ValueError(f"warc_path directory is missing or not writable: {parent}")
+    if os.path.exists(path):
+        raise ValueError(f"warc_path already exists and will not be overwritten: {path}")
+    return path
+
 def download_asset(url):
     """Download an asset and return its local path relative to root."""
     url = clean_url(url)
@@ -153,7 +273,7 @@ def download_asset(url):
         os.makedirs(os.path.dirname(local_abs_path), exist_ok=True)
         
         # Stream download in chunks
-        response = session.get(url, headers=headers, stream=True, timeout=20)
+        response = polite_get(url, headers=headers, stream=True, timeout=20)
         if response.status_code == 200:
             # Prevent infinite recursion on circular dependencies (e.g. self-importing styles)
             downloaded_assets[url] = local_rel_path
@@ -633,7 +753,7 @@ def handle_pagination(soup, url, pager):
     for page_num, page_url in page_urls:
         print(f"[*] Fetching paginated items from {page_url}...")
         try:
-            res = session.get(page_url, headers=headers, timeout=15)
+            res = polite_get(page_url, headers=headers, timeout=15)
             if res.status_code == 200:
                 sub_soup = BeautifulSoup(res.text, 'html.parser')
                 
@@ -688,7 +808,7 @@ def crawl_page(url):
     crawled_pages.add(url)
     
     try:
-        response = session.get(url, headers=headers, timeout=15)
+        response = polite_get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             print(f"[!] Skip page {url} (HTTP {response.status_code})")
             return
@@ -951,7 +1071,8 @@ def crawl_page(url):
         print(f"[!] Error crawling page {url}: {e}")
 
 def main():
-    global seed_url, target_domain, allowed_asset_domains, output_dir, headers, self_contain
+    global seed_url, target_domain, allowed_asset_domains, output_dir, headers, self_contain, crawl_delay
+    global warc_path, secret_header_names
 
     if len(sys.argv) < 2:
         print("Usage: scraper.py <config.json>")
@@ -965,7 +1086,14 @@ def main():
     output_dir = config.get('output_dir')
     headers = config.get('headers', {})
     self_contain = config.get('self_contain', False)
-
+    # Every header supplied by the config is treated as a secret for the WARC.
+    secret_header_names = {name.lower() for name in headers}
+    try:
+        crawl_delay = parse_crawl_delay(config.get('delay'))
+        warc_path = validate_warc_path(config.get('warc_path'))
+    except ValueError as e:
+        print(f"[!] Invalid configuration: {e}")
+        sys.exit(2)
     
     parsed_seed = urllib.parse.urlparse(seed_url)
     target_domain = parsed_seed.netloc.lower()
@@ -983,6 +1111,8 @@ def main():
     print(f"Allowed Asset Domains: {allowed_asset_domains}")
     print(f"Output Directory: {output_dir}")
     print(f"Self-Contained Mode: {self_contain}")
+    print(f"Crawl Delay: {crawl_delay:g}s between requests")
+    print(f"WARC Output: {warc_path or 'disabled'}")
     print(f"Custom Headers: {list(headers.keys())}")
     print("=======================")
     
@@ -990,7 +1120,8 @@ def main():
     if 'User-Agent' not in headers:
         headers['User-Agent'] = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         
-    crawl_page(seed_url)
+    with warc_capture(warc_path):
+        crawl_page(seed_url)
     
     print("\n=== Crawl Completed ===")
     print(f"Total HTML pages crawled: {len(crawled_pages)}")

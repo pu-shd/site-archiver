@@ -1,0 +1,50 @@
+# Browsertrix engine: headless Chromium crawl written to a WACZ.
+#
+# Driven by `archive.sh --browsertrix`; all settings come from the environment:
+#   CRAWL_URL            seed URL (required)
+#   ARCHIVE_DIR          host directory for crawl output (required)
+#   COLLECTION           collection / WACZ name (required)
+#   BYPASS_HOSTS         hosts that get the bypass header and the throttle (required)
+#   CRAWL_DELAY          seconds between requests to BYPASS_HOSTS (default 1)
+#   PAGE_LIMIT           max pages, 0 = unlimited (default 0)
+#   BYPASS_HEADER_VALUE  bypass header value; empty = no header. Handed to the
+#                        proxy as a compose secret (a file under /run/secrets),
+#                        not an environment variable.
+services:
+  proxy:
+    build: ./proxy
+    environment:
+      BYPASS_HOSTS: ${BYPASS_HOSTS:?set BYPASS_HOSTS}
+      CRAWL_DELAY: ${CRAWL_DELAY:-1}
+    secrets:
+      - bypass_header
+
+  crawler:
+    image: webrecorder/browsertrix-crawler:1.15.4
+    depends_on:
+      proxy:
+        condition: service_healthy
+    volumes:
+      - ${ARCHIVE_DIR:?set ARCHIVE_DIR}:/crawls
+    command:
+      - crawl
+      - --url
+      - ${CRAWL_URL:?set CRAWL_URL}
+      - --scopeType
+      - host
+      - --collection
+      - ${COLLECTION:?set COLLECTION}
+      - --generateWACZ
+      - --workers
+      - "1"
+      - --limit
+      - ${PAGE_LIMIT:-0}
+      # The proxy serializes in-scope requests, so asset-heavy pages load slowly.
+      - --pageLoadTimeout
+      - "300"
+      - --proxyServer
+      - http://proxy:8080
+
+secrets:
+  bypass_header:
+    environment: BYPASS_HEADER_VALUE

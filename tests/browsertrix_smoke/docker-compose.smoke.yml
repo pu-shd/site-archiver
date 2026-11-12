@@ -1,0 +1,18 @@
+# Overlay on browsertrix/docker-compose.yml that adds a bot-protected HTTPS
+# origin. The proxy trusts only the throwaway CA that signed the origin's
+# certificate, so upstream TLS verification stays on.
+services:
+  origin:
+    build: ${SMOKE_DIR:?set SMOKE_DIR}/origin
+    environment:
+      EXPECTED_BYPASS_VALUE: ${BYPASS_HEADER_VALUE:?set BYPASS_HEADER_VALUE}
+    volumes:
+      - ${SMOKE_CERTS:?set SMOKE_CERTS}:/certs:ro
+
+  proxy:
+    depends_on:
+      - origin
+    environment:
+      MITMDUMP_EXTRA_ARGS: --set ssl_verify_upstream_trusted_ca=/certs/ca.pem
+    volumes:
+      - ${SMOKE_CERTS}:/certs:ro
