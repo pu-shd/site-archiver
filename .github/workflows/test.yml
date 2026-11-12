@@ -6,7 +6,6 @@ on:
       - main
     paths-ignore:
       - '**.md'
-      - '**.txt'
       - 'LICENSE'
       - 'docs/**'
   pull_request:
@@ -14,7 +13,6 @@ on:
       - main
     paths-ignore:
       - '**.md'
-      - '**.txt'
       - 'LICENSE'
       - 'docs/**'
   workflow_dispatch:

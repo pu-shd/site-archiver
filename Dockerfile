@@ -1,9 +1,10 @@
-FROM python:3.11-slim AS base
+FROM python:3.11.18-slim-bookworm AS base
 
 WORKDIR /app
 
-# Install standard networking and scraping libraries
-RUN pip install --no-cache-dir requests beautifulsoup4
+# Install pinned networking and scraping libraries
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 # Copy scraper code
 COPY scraper.py /app/scraper.py
