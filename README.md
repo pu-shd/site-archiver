@@ -10,7 +10,7 @@ Site Archiver is a containerized automation tool designed to create 1-for-1 stat
 - **Jekyll Bypass**: Automatically configures `.nojekyll` to ensure GitHub Pages serves directories starting with underscores (like `_assets/`).
 - **JS Security Hardening**: Rewrites known-vulnerable CMS JavaScript as it is downloaded, so archived sites do not inherit findings that static analysis (CodeQL) reports on the published repository.
 - **Polite Crawling**: Spaces requests to the crawled site by a configurable delay (1 second by default).
-- **Preservation Copies (optional)**: Records the raw crawl as a WARC (`--warc`) that plays back in [ReplayWeb.page](https://replayweb.page/). The bypass header is never written into it.
+- **Preservation Copies (optional)**: Records the raw crawl as a WARC (`--warc`) and/or captures a WACZ with headless Chromium via browsertrix-crawler (`--browsertrix`). Both play back in [ReplayWeb.page](https://replayweb.page/). The bypass header is never written into either.
 - **Secrets Management**: Treats bot bypass headers as secrets, accepting them interactively or via environment variables without committing them to repositories.
 - **Deployment Monitoring**: Uses the GitHub CLI to enable Pages and monitor the deployment workflow status, reporting when the live site is ready.
 
@@ -51,19 +51,35 @@ If you select `y` for the bypass header prompt, it will hide your input as you t
 | `--self-contain` | `-s` | Host jQuery/Bootstrap locally instead of using public CDNs | Off |
 | `--delay` | `-d` | Minimum seconds between requests to the site (0-60) | `1` |
 | `--warc` | `-w` | Also record the requests crawl as a `.warc.gz` | Off |
-| `--archive-dir` | | Where WARC files are written (never inside `--output`) | `archives/<repo>` |
+| `--browsertrix` | | Also capture a `.wacz` with browsertrix-crawler | Off |
+| `--page-limit` | | Max pages for `--browsertrix` (`0` = unlimited) | `0` |
+| `--archive-dir` | | Where WARC/WACZ files are written (never inside `--output`) | `archives/<repo>` |
 
 ## Crawl Throttling
 
 Every request to the crawled site and its allowed asset domains waits until at least `--delay` seconds have passed since the previous one finished. The default of 1 second matches the common `wget --wait=1` convention; `--delay 0` disables throttling. Third-party CDN fetches are not throttled.
 
-## Preservation Copies (WARC)
+## Preservation Copies (WARC / WACZ)
 
-The published mirror is an *access copy*: links are rewritten and JavaScript is hardened. The optional preservation copy keeps what the server actually sent, so the site can be replayed or the mirror rebuilt after the original is gone. It is written to `--archive-dir`, outside the published repository.
+The published mirror is an *access copy*: links are rewritten and JavaScript is hardened. The optional preservation copies keep what the server actually sent, so the site can be replayed or the mirror rebuilt after the original is gone. They are written to `--archive-dir`, outside the published repository.
 
 ### `--warc`: record the requests crawl
 
 The crawler's own traffic is recorded with [warcio](https://github.com/webrecorder/warcio) to `<archive-dir>/<name>-<UTC timestamp>.warc.gz`. Every header supplied in the crawl configuration (such as the bypass header) is replaced with `[REDACTED]` in the request records, and the record digests are recomputed so the WARC stays valid.
+
+### `--browsertrix`: capture with headless Chromium
+
+For JavaScript-heavy sites, [browsertrix-crawler](https://github.com/webrecorder/browsertrix-crawler) (pinned to 1.15.4) captures a WACZ to `<archive-dir>/browsertrix/collections/<name>/<name>.wacz`. Requires `docker-compose`. It runs in addition to the normal mirror crawl, since GitHub Pages still needs the static mirror.
+
+browsertrix-crawler has no option for custom request headers, so `browsertrix/docker-compose.yml` routes the browser through a small mitmproxy sidecar (`browsertrix/proxy/bypass_proxy.py`) that:
+
+- adds the bypass header only to the target host and `--assets` domains, never to third parties;
+- applies `--delay` to every request to those hosts; and
+- validates its configuration before starting, so a bad setting stops the crawl.
+
+The proxy adds the header after the browser has recorded the request, so it never appears in the WACZ. The value reaches the proxy as a Compose secret file, not an environment variable. Upstream TLS certificates are verified by the proxy.
+
+Because the throttle applies to every asset, a page with ~100 assets takes a couple of minutes at the default delay. Use `--page-limit` for a quick test capture.
 
 ## JavaScript Security Hardening
 
@@ -103,4 +119,10 @@ To run in the project `.venv` instead (created on first use):
 ./run_tests.sh --local
 ```
 
-CI runs the same containerized suite on every push and pull request to `main` (`.github/workflows/test.yml`), and additionally asserts that a plain `docker build` still produces the scraper runtime image.
+To also run the browsertrix end-to-end smoke test, which crawls a local HTTPS origin that returns 403 without the bypass header and checks the WACZ, the header delivery and the request spacing:
+
+```bash
+./run_tests.sh --integration
+```
+
+CI runs the same containerized suite on every push and pull request to `main` (`.github/workflows/test.yml`), and additionally asserts that a plain `docker build` still produces the scraper runtime image. A separate job runs the browsertrix smoke test.

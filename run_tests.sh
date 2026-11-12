@@ -6,6 +6,7 @@
 # Usage:
 #   ./run_tests.sh            # run the suite in Docker (default)
 #   ./run_tests.sh --local    # run the suite in the project .venv
+#   ./run_tests.sh --integration  # also run the browsertrix end-to-end smoke test
 #
 set -euo pipefail
 
@@ -18,12 +19,24 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 MODE="docker"
+INTEGRATION="false"
 for arg in "$@"; do
   case "$arg" in
     --local) MODE="local" ;;
+    --integration) INTEGRATION="true" ;;
     *) echo "${RED}Error: unknown option $arg${NC}"; exit 1 ;;
   esac
 done
+
+run_integration() {
+  [[ "$INTEGRATION" == "true" ]] || return 0
+  echo "${YELLOW}[*] Running browsertrix end-to-end smoke test...${NC}"
+  if ! "$SCRIPT_DIR/tests/browsertrix_smoke/run.sh"; then
+    echo "${RED}✘ Browsertrix smoke test failed.${NC}"
+    exit 1
+  fi
+  echo "${GREEN}✔ Browsertrix smoke test passed.${NC}"
+}
 
 if [[ "$MODE" == "local" ]]; then
   cd "$SCRIPT_DIR"
@@ -38,6 +51,7 @@ if [[ "$MODE" == "local" ]]; then
     exit 1
   fi
   echo "${GREEN}✔ All tests passed.${NC}"
+  run_integration
   exit 0
 fi
 
@@ -64,3 +78,4 @@ if ! docker run --rm "$IMAGE_NAME"; then
 fi
 
 echo "${GREEN}✔ All tests passed.${NC}"
+run_integration

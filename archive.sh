@@ -28,6 +28,8 @@ SELF_CONTAIN="false"
 CRAWL_DELAY="1"
 ARCHIVE_DIR=""
 WARC="false"
+BROWSERTRIX="false"
+PAGE_LIMIT="0"
 
 # Show Banner
 show_banner() {
@@ -52,6 +54,8 @@ show_help() {
     echo "  -s, --self-contain     Self-contain assets locally instead of using public CDNs"
     echo "  -d, --delay <seconds>  Minimum delay between requests, 0-60 (default: 1)"
     echo "  -w, --warc             Also record the crawl as a WARC (bypass header redacted)"
+    echo "      --browsertrix      Also capture a WACZ with browsertrix-crawler (headless Chromium)"
+    echo "      --page-limit <n>   Max pages for --browsertrix, 0 = unlimited (default: 0)"
     echo "      --archive-dir <d>  Where WARC/WACZ files go (default: archives/<repo>)"
     echo "  -h, --help             Show this help message"
     echo ""
@@ -91,6 +95,14 @@ while [[ $# -gt 0 ]]; do
             WARC="true"
             shift
             ;;
+        --browsertrix)
+            BROWSERTRIX="true"
+            shift
+            ;;
+        --page-limit)
+            PAGE_LIMIT="$2"
+            shift 2
+            ;;
         --archive-dir)
             ARCHIVE_DIR="$2"
             shift 2
@@ -118,6 +130,11 @@ if [[ ! "$CRAWL_DELAY" =~ ^[0-9]+(\.[0-9]+)?$ ]] || \
     exit 1
 fi
 
+if [[ ! "$PAGE_LIMIT" =~ ^[0-9]+$ ]]; then
+    echo -e "${RED}Error: --page-limit must be a non-negative integer (got '$PAGE_LIMIT').${NC}"
+    exit 1
+fi
+
 show_banner
 
 # 1. Dependency Checks
@@ -130,6 +147,10 @@ for dep in "${DEPENDENCIES[@]}"; do
     fi
 done
 echo -e "${GREEN}✔ All core dependencies found! (docker, git, gh)${NC}"
+if [ "$BROWSERTRIX" = "true" ] && ! command -v docker-compose &>/dev/null; then
+    echo -e "${RED}Error: --browsertrix requires docker-compose.${NC}"
+    exit 1
+fi
 
 # Verify GitHub CLI authentication
 if ! gh auth status &>/dev/null; then
@@ -192,7 +213,7 @@ if [ -z "$ARCHIVE_NAME" ]; then
 fi
 ARCHIVE_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 ABS_ARCHIVE_DIR=""
-if [ "$WARC" = "true" ]; then
+if [ "$WARC" = "true" ] || [ "$BROWSERTRIX" = "true" ]; then
     if [ -z "$ARCHIVE_DIR" ]; then
         ARCHIVE_DIR="archives/${REPO_PATH:-$ARCHIVE_NAME}"
     fi
@@ -214,6 +235,7 @@ echo -e "  - GitHub Repo:      ${BOLD}$REPO_PATH${NC}"
 echo -e "  - Self-Contained:   ${BOLD}$SELF_CONTAIN${NC}"
 echo -e "  - Crawl Delay:      ${BOLD}${CRAWL_DELAY}s${NC}"
 echo -e "  - WARC Capture:     ${BOLD}$WARC${NC}"
+echo -e "  - Browsertrix WACZ: ${BOLD}$BROWSERTRIX${NC}"
 if [ -n "$ABS_ARCHIVE_DIR" ]; then
     echo -e "  - Archive Dir:      ${BOLD}$ABS_ARCHIVE_DIR${NC}"
 fi
@@ -296,6 +318,37 @@ fi
 # Clean up configuration file now that we are done crawling
 cleanup
 trap - EXIT INT TERM
+
+# 5b. Optional browsertrix capture (headless Chromium -> WACZ)
+if [ "$BROWSERTRIX" = "true" ]; then
+    echo -e "${BLUE}[*] Capturing WACZ with browsertrix-crawler...${NC}"
+    TARGET_HOST="$(echo "$TARGET_URL" | sed -E 's#^https?://##; s#[/:?].*##' | tr '[:upper:]' '[:lower:]')"
+    BTX_HOSTS="$TARGET_HOST"
+    if [ -n "$ALLOWED_ASSETS" ]; then
+        BTX_HOSTS="$BTX_HOSTS,$ALLOWED_ASSETS"
+    fi
+    BTX_COLLECTION="$ARCHIVE_NAME-$(echo "$ARCHIVE_STAMP" | tr '[:upper:]' '[:lower:]')"
+    BTX_DIR="$ABS_ARCHIVE_DIR/browsertrix"
+    mkdir -p "$BTX_DIR"
+    BTX_COMPOSE=(docker-compose -p "site-archiver-btx" -f "$SCRIPT_DIR/browsertrix/docker-compose.yml")
+    btx_cleanup() { "${BTX_COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true; }
+    trap btx_cleanup EXIT INT TERM
+    if ! CRAWL_URL="$TARGET_URL" ARCHIVE_DIR="$BTX_DIR" COLLECTION="$BTX_COLLECTION" \
+         BYPASS_HOSTS="$BTX_HOSTS" CRAWL_DELAY="$CRAWL_DELAY" PAGE_LIMIT="$PAGE_LIMIT" \
+         BYPASS_HEADER_VALUE="$BYPASS_HEADER_VAL" \
+         "${BTX_COMPOSE[@]}" run --rm --build crawler; then
+        echo -e "${RED}Error: browsertrix crawl failed.${NC}"
+        exit 1
+    fi
+    btx_cleanup
+    trap - EXIT INT TERM
+    WACZ_FILE="$BTX_DIR/collections/$BTX_COLLECTION/$BTX_COLLECTION.wacz"
+    if [ ! -s "$WACZ_FILE" ]; then
+        echo -e "${RED}Error: browsertrix finished but no WACZ was written at $WACZ_FILE.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✔ WACZ written: $WACZ_FILE${NC}"
+fi
 
 # 6. Initialize Git and Commit Mirrored Site
 echo -e "${BLUE}[*] Initializing local Git repository inside output folder...${NC}"

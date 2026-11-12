@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify Scraper Compiles
         run: |
-          python3 -m py_compile scraper.py test_*.py
+          python3 -m py_compile scraper.py test_*.py browsertrix/proxy/bypass_proxy.py tests/browsertrix_smoke/*.py tests/browsertrix_smoke/origin/server.py
 
       - name: Run Containerized Test Suite
         run: |
@@ -50,3 +50,25 @@ jobs:
             echo "::error::Runtime image entrypoint changed unexpectedly: $ENTRYPOINT"
             exit 1
           fi
+
+  browsertrix-smoke:
+    name: Browsertrix End-to-End Smoke Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install zsh and a docker-compose shim
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsh
+          # Runners ship the Compose v2 plugin; expose it under the
+          # docker-compose name the project scripts use.
+          if ! command -v docker-compose >/dev/null 2>&1; then
+            printf '#!/bin/sh\nexec docker compose "$@"\n' | sudo tee /usr/local/bin/docker-compose >/dev/null
+            sudo chmod +x /usr/local/bin/docker-compose
+          fi
+          docker-compose version
+
+      - name: Run smoke test
+        run: tests/browsertrix_smoke/run.sh
