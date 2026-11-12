@@ -11,7 +11,7 @@ import ssl
 import time
 
 HEADER = "x-wdsoit-bot-bypass"
-EXPECTED = os.environ["EXPECTED_BYPASS_VALUE"]
+EXPECTED = None  # set from EXPECTED_BYPASS_VALUE in main()
 
 PAGES = {
     "/": ("text/html", b"<html><head><link rel='stylesheet' href='/style.css'></head><body>"
@@ -46,8 +46,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain("/certs/origin.pem", "/certs/origin.key")
-server = http.server.ThreadingHTTPServer(("0.0.0.0", 8443), Handler)
-server.socket = ctx.wrap_socket(server.socket, server_side=True)
-server.serve_forever()
+def make_tls_context(certfile, keyfile):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # State the floor explicitly rather than relying on interpreter defaults.
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(certfile, keyfile)
+    return ctx
+
+
+def main():
+    global EXPECTED
+    EXPECTED = os.environ["EXPECTED_BYPASS_VALUE"]
+    ctx = make_tls_context("/certs/origin.pem", "/certs/origin.key")
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", 8443), Handler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

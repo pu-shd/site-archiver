@@ -15,6 +15,7 @@ FROM base AS test
 COPY test_*.py /app/
 COPY browsertrix/proxy/bypass_proxy.py /app/browsertrix/proxy/bypass_proxy.py
 COPY archive.sh /app/archive.sh
+COPY tests/browsertrix_smoke/origin/server.py /app/tests/browsertrix_smoke/origin/server.py
 ENTRYPOINT ["python", "-m", "unittest", "discover", "-s", "/app", "-p", "test_*.py", "-v"]
 
 # Runtime stage. Kept last so a plain `docker build` still produces the scraper.
