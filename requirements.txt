@@ -1,12 +1,14 @@
 # Runtime dependencies for scraper.py, pinned with their transitive deps.
 # Regenerate inside the base image so versions match the container:
 #   docker run --rm -v "$PWD:/w" -w /w python:3.11.18-slim-bookworm \
-#     sh -c 'pip install -q requests beautifulsoup4 && pip freeze'
+#     sh -c 'pip install -q requests beautifulsoup4 warcio && pip freeze'
 beautifulsoup4==4.15.0
 certifi==2026.10.23
 charset-normalizer==3.5.2
 idna==3.20
 requests==2.34.2
+six==1.17.0
 soupsieve==4.1
 typing_extensions==4.16.0
 urllib3==2.8.0
+warcio==1.8.2

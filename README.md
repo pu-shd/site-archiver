@@ -10,6 +10,7 @@ Site Archiver is a containerized automation tool designed to create 1-for-1 stat
 - **Jekyll Bypass**: Automatically configures `.nojekyll` to ensure GitHub Pages serves directories starting with underscores (like `_assets/`).
 - **JS Security Hardening**: Rewrites known-vulnerable CMS JavaScript as it is downloaded, so archived sites do not inherit findings that static analysis (CodeQL) reports on the published repository.
 - **Polite Crawling**: Spaces requests to the crawled site by a configurable delay (1 second by default).
+- **Preservation Copies (optional)**: Records the raw crawl as a WARC (`--warc`) that plays back in [ReplayWeb.page](https://replayweb.page/). The bypass header is never written into it.
 - **Secrets Management**: Treats bot bypass headers as secrets, accepting them interactively or via environment variables without committing them to repositories.
 - **Deployment Monitoring**: Uses the GitHub CLI to enable Pages and monitor the deployment workflow status, reporting when the live site is ready.
 
@@ -49,10 +50,20 @@ If you select `y` for the bypass header prompt, it will hide your input as you t
 | `--assets` | `-a` | Comma-separated asset domains allowed | `*.princeton.edu` |
 | `--self-contain` | `-s` | Host jQuery/Bootstrap locally instead of using public CDNs | Off |
 | `--delay` | `-d` | Minimum seconds between requests to the site (0-60) | `1` |
+| `--warc` | `-w` | Also record the requests crawl as a `.warc.gz` | Off |
+| `--archive-dir` | | Where WARC files are written (never inside `--output`) | `archives/<repo>` |
 
 ## Crawl Throttling
 
 Every request to the crawled site and its allowed asset domains waits until at least `--delay` seconds have passed since the previous one finished. The default of 1 second matches the common `wget --wait=1` convention; `--delay 0` disables throttling. Third-party CDN fetches are not throttled.
+
+## Preservation Copies (WARC)
+
+The published mirror is an *access copy*: links are rewritten and JavaScript is hardened. The optional preservation copy keeps what the server actually sent, so the site can be replayed or the mirror rebuilt after the original is gone. It is written to `--archive-dir`, outside the published repository.
+
+### `--warc`: record the requests crawl
+
+The crawler's own traffic is recorded with [warcio](https://github.com/webrecorder/warcio) to `<archive-dir>/<name>-<UTC timestamp>.warc.gz`. Every header supplied in the crawl configuration (such as the bypass header) is replaced with `[REDACTED]` in the request records, and the record digests are recomputed so the WARC stays valid.
 
 ## JavaScript Security Hardening
 

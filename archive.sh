@@ -26,6 +26,8 @@ ALLOWED_ASSETS="*.princeton.edu"
 BYPASS_HEADER_VAL=""
 SELF_CONTAIN="false"
 CRAWL_DELAY="1"
+ARCHIVE_DIR=""
+WARC="false"
 
 # Show Banner
 show_banner() {
@@ -49,6 +51,8 @@ show_help() {
     echo "  -b, --bypass <val>     Value of x-wdsoit-bot-bypass header (Treat as secret)"
     echo "  -s, --self-contain     Self-contain assets locally instead of using public CDNs"
     echo "  -d, --delay <seconds>  Minimum delay between requests, 0-60 (default: 1)"
+    echo "  -w, --warc             Also record the crawl as a WARC (bypass header redacted)"
+    echo "      --archive-dir <d>  Where WARC/WACZ files go (default: archives/<repo>)"
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Example:"
@@ -81,6 +85,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -d|--delay)
             CRAWL_DELAY="$2"
+            shift 2
+            ;;
+        -w|--warc)
+            WARC="true"
+            shift
+            ;;
+        --archive-dir)
+            ARCHIVE_DIR="$2"
             shift 2
             ;;
         -s|--self-contain)
@@ -168,6 +180,32 @@ fi
 mkdir -p "$OUTPUT_DIR"
 ABS_OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 
+# Preservation copies (WARC/WACZ) live outside the published output directory.
+if [ -n "$REPO_PATH" ]; then
+    ARCHIVE_NAME="${REPO_PATH##*/}"
+else
+    ARCHIVE_NAME="$(echo "$TARGET_URL" | sed -E 's#^https?://##; s#[/:?].*##')"
+fi
+ARCHIVE_NAME="$(echo "$ARCHIVE_NAME" | sed -E 's#[^A-Za-z0-9-]+#-#g; s#^-+##; s#-+$##' | tr '[:upper:]' '[:lower:]')"
+if [ -z "$ARCHIVE_NAME" ]; then
+    ARCHIVE_NAME="site"
+fi
+ARCHIVE_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+ABS_ARCHIVE_DIR=""
+if [ "$WARC" = "true" ]; then
+    if [ -z "$ARCHIVE_DIR" ]; then
+        ARCHIVE_DIR="archives/${REPO_PATH:-$ARCHIVE_NAME}"
+    fi
+    mkdir -p "$ARCHIVE_DIR"
+    ABS_ARCHIVE_DIR="$(cd "$ARCHIVE_DIR" && pwd)"
+    case "$ABS_ARCHIVE_DIR/" in
+        "$ABS_OUTPUT_DIR"/*)
+            echo -e "${RED}Error: --archive-dir must not be inside the published output directory.${NC}"
+            exit 1
+            ;;
+    esac
+fi
+
 echo -e "\n${CYAN}Configuration Summary:${NC}"
 echo -e "  - Target URL:       ${BOLD}$TARGET_URL${NC}"
 echo -e "  - Allowed Assets:   ${BOLD}$ALLOWED_ASSETS${NC}"
@@ -175,6 +213,10 @@ echo -e "  - Local Output Dir: ${BOLD}$ABS_OUTPUT_DIR${NC}"
 echo -e "  - GitHub Repo:      ${BOLD}$REPO_PATH${NC}"
 echo -e "  - Self-Contained:   ${BOLD}$SELF_CONTAIN${NC}"
 echo -e "  - Crawl Delay:      ${BOLD}${CRAWL_DELAY}s${NC}"
+echo -e "  - WARC Capture:     ${BOLD}$WARC${NC}"
+if [ -n "$ABS_ARCHIVE_DIR" ]; then
+    echo -e "  - Archive Dir:      ${BOLD}$ABS_ARCHIVE_DIR${NC}"
+fi
 if [ -n "$BYPASS_HEADER_VAL" ]; then
     echo -e "  - Bypass Header:    ${YELLOW}[SET (HIDDEN)]${NC}"
 else
@@ -192,6 +234,14 @@ if [ -n "$BYPASS_HEADER_VAL" ]; then
     HEADERS_JSON="{\"x-wdsoit-bot-bypass\": \"$BYPASS_HEADER_VAL\"}"
 fi
 
+WARC_PATH_JSON="null"
+WARC_MOUNT=()
+if [ "$WARC" = "true" ]; then
+    WARC_FILE="$ARCHIVE_NAME-$ARCHIVE_STAMP.warc.gz"
+    WARC_PATH_JSON="\"/archive/$WARC_FILE\""
+    WARC_MOUNT=(-v "$ABS_ARCHIVE_DIR:/archive")
+fi
+
 # Write config.json
 cat <<EOF > "$CONFIG_FILE"
 {
@@ -200,6 +250,7 @@ cat <<EOF > "$CONFIG_FILE"
   "allowed_asset_domains": "$ALLOWED_ASSETS",
   "self_contain": $SELF_CONTAIN,
   "delay": $CRAWL_DELAY,
+  "warc_path": $WARC_PATH_JSON,
   "headers": $HEADERS_JSON
 }
 EOF
@@ -227,11 +278,20 @@ echo -e "${YELLOW}Please wait, crawling may take some time depending on site siz
 if ! docker run --rm \
     -v "$ABS_OUTPUT_DIR:/output" \
     -v "$CONFIG_FILE:/app/config.json" \
+    ${WARC_MOUNT[@]+"${WARC_MOUNT[@]}"} \
     site-archiver-scraper config.json; then
     echo -e "${RED}Error: Scraper encountered an error during crawl.${NC}"
     exit 1
 fi
 echo -e "${GREEN}✔ Scrape completed successfully! Assets downloaded and paths rewritten.${NC}"
+
+if [ "$WARC" = "true" ]; then
+    if [ ! -s "$ABS_ARCHIVE_DIR/$WARC_FILE" ]; then
+        echo -e "${RED}Error: WARC capture was requested but $ABS_ARCHIVE_DIR/$WARC_FILE was not written.${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}✔ WARC written: $ABS_ARCHIVE_DIR/$WARC_FILE${NC}"
+fi
 
 # Clean up configuration file now that we are done crawling
 cleanup

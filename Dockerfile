@@ -2,7 +2,7 @@ FROM python:3.11.18-slim-bookworm AS base
 
 WORKDIR /app
 
-# Install pinned networking and scraping libraries
+# Install pinned networking, scraping and WARC libraries
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
