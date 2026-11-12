@@ -79,7 +79,7 @@ The suite runs in Docker so the host stays clean and CI matches local runs:
 ./run_tests.sh
 ```
 
-To run against the host Python instead:
+To run in the project `.venv` instead (created on first use):
 
 ```bash
 ./run_tests.sh --local

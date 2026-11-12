@@ -30,7 +30,7 @@ jobs:
 
       - name: Verify Scraper Compiles
         run: |
-          python3 -m py_compile scraper.py test_scraper.py
+          python3 -m py_compile scraper.py test_*.py
 
       - name: Run Containerized Test Suite
         run: |

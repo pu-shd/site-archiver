@@ -12,7 +12,7 @@ COPY scraper.py /app/scraper.py
 # Test stage: runs the unit suite inside the container.
 #   docker build --target test -t site-archiver-tests . && docker run --rm site-archiver-tests
 FROM base AS test
-COPY test_scraper.py /app/test_scraper.py
+COPY test_*.py /app/
 ENTRYPOINT ["python", "-m", "unittest", "discover", "-s", "/app", "-p", "test_*.py", "-v"]
 
 # Runtime stage. Kept last so a plain `docker build` still produces the scraper.

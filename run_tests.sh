@@ -5,7 +5,7 @@
 #
 # Usage:
 #   ./run_tests.sh            # run the suite in Docker (default)
-#   ./run_tests.sh --local    # run the suite directly with the host python
+#   ./run_tests.sh --local    # run the suite in the project .venv
 #
 set -euo pipefail
 
@@ -18,14 +18,22 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 MODE="docker"
-if [[ "${1:-}" == "--local" ]]; then
-  MODE="local"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --local) MODE="local" ;;
+    *) echo "${RED}Error: unknown option $arg${NC}"; exit 1 ;;
+  esac
+done
 
 if [[ "$MODE" == "local" ]]; then
-  echo "${YELLOW}[*] Running test suite on the host python...${NC}"
   cd "$SCRIPT_DIR"
-  if ! python3 -m unittest discover -s . -p 'test_*.py' -v; then
+  if [[ ! -x .venv/bin/python ]]; then
+    echo "${YELLOW}[*] Creating project .venv...${NC}"
+    python3 -m venv .venv
+  fi
+  .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requirements.txt
+  echo "${YELLOW}[*] Running test suite in .venv...${NC}"
+  if ! .venv/bin/python -m unittest discover -s . -p 'test_*.py' -v; then
     echo "${RED}✘ Tests failed.${NC}"
     exit 1
   fi
