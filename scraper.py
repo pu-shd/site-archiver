@@ -1,6 +1,8 @@
 import os
 import sys
 import re
+import math
+import time
 import json
 import urllib.parse
 import fnmatch
@@ -18,6 +20,13 @@ allowed_asset_domains = []
 output_dir = None
 headers = {}
 self_contain = False
+
+# Politeness: minimum seconds between requests to the crawled site. The
+# default matches the common `wget --wait=1` convention.
+DEFAULT_CRAWL_DELAY = 1.0
+MAX_CRAWL_DELAY = 60.0
+crawl_delay = DEFAULT_CRAWL_DELAY
+_last_request_at = None
 
 # Keep track of crawled pages and assets
 crawled_pages = set()
@@ -130,6 +139,36 @@ def url_to_local_path(url, is_page):
                 return f"{local_dir}{query_suffix}"
         return local_dir
 
+def parse_crawl_delay(value):
+    """Validate the configured crawl delay in seconds; None means the default."""
+    if value is None:
+        return DEFAULT_CRAWL_DELAY
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"crawl delay must be a number of seconds, got {value!r}")
+    try:
+        delay = float(value)
+    except ValueError:
+        raise ValueError(f"crawl delay must be a number of seconds, got {value!r}") from None
+    if not math.isfinite(delay) or delay < 0 or delay > MAX_CRAWL_DELAY:
+        raise ValueError(f"crawl delay must be between 0 and {MAX_CRAWL_DELAY:g} seconds, got {value!r}")
+    return delay
+
+def polite_get(url, **kwargs):
+    """GET through the shared session, spacing requests by `crawl_delay`.
+
+    The delay runs from the end of the previous request (including failed
+    ones) to the start of the next, so a slow server is never hit faster.
+    """
+    global _last_request_at
+    if crawl_delay > 0 and _last_request_at is not None:
+        remaining = crawl_delay - (time.monotonic() - _last_request_at)
+        if remaining > 0:
+            time.sleep(remaining)
+    try:
+        return session.get(url, **kwargs)
+    finally:
+        _last_request_at = time.monotonic()
+
 def download_asset(url):
     """Download an asset and return its local path relative to root."""
     url = clean_url(url)
@@ -153,7 +192,7 @@ def download_asset(url):
         os.makedirs(os.path.dirname(local_abs_path), exist_ok=True)
         
         # Stream download in chunks
-        response = session.get(url, headers=headers, stream=True, timeout=20)
+        response = polite_get(url, headers=headers, stream=True, timeout=20)
         if response.status_code == 200:
             # Prevent infinite recursion on circular dependencies (e.g. self-importing styles)
             downloaded_assets[url] = local_rel_path
@@ -633,7 +672,7 @@ def handle_pagination(soup, url, pager):
     for page_num, page_url in page_urls:
         print(f"[*] Fetching paginated items from {page_url}...")
         try:
-            res = session.get(page_url, headers=headers, timeout=15)
+            res = polite_get(page_url, headers=headers, timeout=15)
             if res.status_code == 200:
                 sub_soup = BeautifulSoup(res.text, 'html.parser')
                 
@@ -688,7 +727,7 @@ def crawl_page(url):
     crawled_pages.add(url)
     
     try:
-        response = session.get(url, headers=headers, timeout=15)
+        response = polite_get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             print(f"[!] Skip page {url} (HTTP {response.status_code})")
             return
@@ -951,7 +990,7 @@ def crawl_page(url):
         print(f"[!] Error crawling page {url}: {e}")
 
 def main():
-    global seed_url, target_domain, allowed_asset_domains, output_dir, headers, self_contain
+    global seed_url, target_domain, allowed_asset_domains, output_dir, headers, self_contain, crawl_delay
 
     if len(sys.argv) < 2:
         print("Usage: scraper.py <config.json>")
@@ -965,7 +1004,11 @@ def main():
     output_dir = config.get('output_dir')
     headers = config.get('headers', {})
     self_contain = config.get('self_contain', False)
-
+    try:
+        crawl_delay = parse_crawl_delay(config.get('delay'))
+    except ValueError as e:
+        print(f"[!] Invalid configuration: {e}")
+        sys.exit(2)
     
     parsed_seed = urllib.parse.urlparse(seed_url)
     target_domain = parsed_seed.netloc.lower()
@@ -983,6 +1026,7 @@ def main():
     print(f"Allowed Asset Domains: {allowed_asset_domains}")
     print(f"Output Directory: {output_dir}")
     print(f"Self-Contained Mode: {self_contain}")
+    print(f"Crawl Delay: {crawl_delay:g}s between requests")
     print(f"Custom Headers: {list(headers.keys())}")
     print("=======================")
     

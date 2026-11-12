@@ -9,6 +9,7 @@ Site Archiver is a containerized automation tool designed to create 1-for-1 stat
 - **Asset Preservation**: Automatically fetches CSS, JS, images, source sets, fonts, and assets hosted on permitted subdomains (e.g. `*.princeton.edu`), preserving full style and layout.
 - **Jekyll Bypass**: Automatically configures `.nojekyll` to ensure GitHub Pages serves directories starting with underscores (like `_assets/`).
 - **JS Security Hardening**: Rewrites known-vulnerable CMS JavaScript as it is downloaded, so archived sites do not inherit findings that static analysis (CodeQL) reports on the published repository.
+- **Polite Crawling**: Spaces requests to the crawled site by a configurable delay (1 second by default).
 - **Secrets Management**: Treats bot bypass headers as secrets, accepting them interactively or via environment variables without committing them to repositories.
 - **Deployment Monitoring**: Uses the GitHub CLI to enable Pages and monitor the deployment workflow status, reporting when the live site is ready.
 
@@ -46,6 +47,12 @@ If you select `y` for the bypass header prompt, it will hide your input as you t
 | `--bypass` | `-b` | Bot bypass header value (for `x-wdsoit-bot-bypass`) | Optional |
 | `--output` | `-o` | Output directory name for the mirror files | `dist` |
 | `--assets` | `-a` | Comma-separated asset domains allowed | `*.princeton.edu` |
+| `--self-contain` | `-s` | Host jQuery/Bootstrap locally instead of using public CDNs | Off |
+| `--delay` | `-d` | Minimum seconds between requests to the site (0-60) | `1` |
+
+## Crawl Throttling
+
+Every request to the crawled site and its allowed asset domains waits until at least `--delay` seconds have passed since the previous one finished. The default of 1 second matches the common `wget --wait=1` convention; `--delay 0` disables throttling. Third-party CDN fetches are not throttled.
 
 ## JavaScript Security Hardening
 

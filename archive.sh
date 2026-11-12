@@ -25,6 +25,7 @@ REPO_PATH=""
 ALLOWED_ASSETS="*.princeton.edu"
 BYPASS_HEADER_VAL=""
 SELF_CONTAIN="false"
+CRAWL_DELAY="1"
 
 # Show Banner
 show_banner() {
@@ -47,6 +48,7 @@ show_help() {
     echo "  -a, --assets <doms>    Comma-separated asset domains allowed (default: *.princeton.edu)"
     echo "  -b, --bypass <val>     Value of x-wdsoit-bot-bypass header (Treat as secret)"
     echo "  -s, --self-contain     Self-contain assets locally instead of using public CDNs"
+    echo "  -d, --delay <seconds>  Minimum delay between requests, 0-60 (default: 1)"
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Example:"
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
             BYPASS_HEADER_VAL="$2"
             shift 2
             ;;
+        -d|--delay)
+            CRAWL_DELAY="$2"
+            shift 2
+            ;;
         -s|--self-contain)
             SELF_CONTAIN="true"
             shift
@@ -92,6 +98,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Fail fast on an invalid delay before doing any work.
+if [[ ! "$CRAWL_DELAY" =~ ^[0-9]+(\.[0-9]+)?$ ]] || \
+   ! awk -v d="$CRAWL_DELAY" 'BEGIN { exit !(d <= 60) }'; then
+    echo -e "${RED}Error: --delay must be a number of seconds between 0 and 60 (got '$CRAWL_DELAY').${NC}"
+    exit 1
+fi
 
 show_banner
 
@@ -161,6 +174,7 @@ echo -e "  - Allowed Assets:   ${BOLD}$ALLOWED_ASSETS${NC}"
 echo -e "  - Local Output Dir: ${BOLD}$ABS_OUTPUT_DIR${NC}"
 echo -e "  - GitHub Repo:      ${BOLD}$REPO_PATH${NC}"
 echo -e "  - Self-Contained:   ${BOLD}$SELF_CONTAIN${NC}"
+echo -e "  - Crawl Delay:      ${BOLD}${CRAWL_DELAY}s${NC}"
 if [ -n "$BYPASS_HEADER_VAL" ]; then
     echo -e "  - Bypass Header:    ${YELLOW}[SET (HIDDEN)]${NC}"
 else
@@ -185,6 +199,7 @@ cat <<EOF > "$CONFIG_FILE"
   "output_dir": "/output",
   "allowed_asset_domains": "$ALLOWED_ASSETS",
   "self_contain": $SELF_CONTAIN,
+  "delay": $CRAWL_DELAY,
   "headers": $HEADERS_JSON
 }
 EOF

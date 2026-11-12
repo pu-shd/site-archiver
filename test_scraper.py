@@ -17,6 +17,8 @@ class TestScraper(unittest.TestCase):
         scraper.target_domain = "fan60.princeton.edu"
         scraper.allowed_asset_domains = ["fan60.princeton.edu", "*.princeton.edu"]
         scraper.headers = {}
+        # Tests mock the network; never sleep between mocked requests.
+        scraper.crawl_delay = 0.0
 
     def test_clean_url(self):
         self.assertEqual(scraper.clean_url("https://example.com/page#anchor"), "https://example.com/page")
